@@ -1,0 +1,234 @@
+"""
+tracker_io.py
+
+Added 2026-08-14. Single entry point every read/write in
+append_invoice_to_excel.py (and entity_resolver.py's now-unused-by-live-
+routing resolve_entity_for_company()) goes through to reach the actual
+Invoice Tracker storage.
+
+WHY THIS EXISTS: the live tracker was a local "Invoice Traker.xlsx" file,
+opened directly by both a human in Excel and this automation. A local
+.xlsx file cannot support simultaneous write-while-open access from two
+different processes -- that's an OS-level file-lock constraint, not
+something a "check if it's locked first" retry loop can truly eliminate
+(see xlsx_io.py's docstring for the original torn-read issue this ran
+into). Per explicit instruction ("your task is not to check if it is open
+or not... somebody is also working so you dont raise a conflict"), the
+tracker was migrated to a native Google Sheet, which supports true
+concurrent multi-writer access with no file locks at all.
+
+WHAT THIS MODULE DOES: dispatches on the shape of `tracker_ref`:
+  - a dict {"type": "google_sheets", "sheet_id": ..., "service_account_json": ...}
+    -> opens the live Google Sheet via the Sheets API (gspread) and returns
+       a WorkbookHandle that duck-types the small subset of openpyxl's
+       Workbook interface the rest of the codebase actually uses
+       (.sheetnames, wb[name], .create_sheet(name), .save(path)).
+  - a plain string (a local .xlsx file path)
+    -> falls back to the original openpyxl-based load_workbook_with_retry()
+       unchanged. Kept for the CLI debug tools (mark_email_sent.py,
+       draft_email_from_excel_row.py's find_row()) that still point at a
+       local file for manual spot-checks, and as an emergency fallback.
+
+This design means NONE of the actual business logic in
+append_invoice_to_excel.py (tax calc, invoice numbering incl. the Poland
+formula-column fix, MIS check, duplicate check, review-status gate) had
+to change -- only this one I/O layer underneath it did.
+
+Google Sheets has no separate "cached formula value" concept the way a
+local .xlsx can (see xlsx_io.py's docstring about India/Kar Ventures/SBI
+Yet to raise) -- it always live-evaluates formulas on read, so `data_only`
+is accepted here for call-site compatibility but has no effect.
+"""
+import logging
+import time
+
+logger = logging.getLogger("email_server.tracker_io")
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+_client_cache = {}
+
+
+def _is_sheet_ref(tracker_ref):
+    return isinstance(tracker_ref, dict) and tracker_ref.get("type") == "google_sheets"
+
+
+def _get_gspread_client(service_account_json):
+    if service_account_json not in _client_cache:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        creds = Credentials.from_service_account_file(service_account_json, scopes=SCOPES)
+        _client_cache[service_account_json] = gspread.authorize(creds)
+    return _client_cache[service_account_json]
+
+
+def load_tracker_with_retry(tracker_ref, data_only=False, retries=4, delay_seconds=1.5):
+    """Same contract as the old load_workbook_with_retry(xlsx_path, data_only=...),
+    except `tracker_ref` may now ALSO be the dict form described in the
+    module docstring, in which case a live Google Sheet is opened instead
+    of a local file. Transient errors (network blips, Sheets API rate
+    limiting -- HTTP 429/5xx) are retried a few times before the original
+    exception is re-raised, same policy as the old xlsx retry wrapper."""
+    if not _is_sheet_ref(tracker_ref):
+        # Plain local file path -- unchanged behavior via the original
+        # openpyxl-based loader.
+        from utils.xlsx_io import load_workbook_with_retry
+        return load_workbook_with_retry(tracker_ref, data_only=data_only, retries=retries, delay_seconds=delay_seconds)
+
+    import gspread
+
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            gc = _get_gspread_client(tracker_ref["service_account_json"])
+            sh = gc.open_by_key(tracker_ref["sheet_id"])
+            return WorkbookHandle(sh)
+        except (gspread.exceptions.APIError, TimeoutError, ConnectionError) as e:
+            last_err = e
+            if attempt < retries:
+                logger.warning(
+                    "  Google Sheets open attempt %d/%d failed (%s) -- retrying in %.2fs",
+                    attempt, retries, e, delay_seconds,
+                )
+                time.sleep(delay_seconds)
+            else:
+                logger.error("  Google Sheets open FAILED after %d attempts: %s", retries, e)
+    raise last_err
+
+
+class _CellRef:
+    """Mimics openpyxl's Cell just enough for `.value` reads (the only
+    attribute any caller in this codebase touches)."""
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
+
+
+class WorksheetHandle:
+    """Duck-types the small subset of openpyxl's Worksheet interface used
+    across this codebase (.max_row, .iter_rows(), .cell(), .append()),
+    backed by a live gspread Worksheet.
+
+    Reads: the whole sheet's values are pulled ONCE per handle (lazily, on
+    first access) via get_all_values() and cached for the handle's
+    lifetime -- exactly matching openpyxl's "load whole sheet into memory,
+    then read from memory" model, so next_invoice_no()'s scan followed by
+    next_data_row()'s scan (both inside one append_invoice() call) costs
+    exactly one API read, not two.
+
+    Writes: `.cell(row, col, value=...)` stages the write in memory (also
+    updating this handle's own read cache, so a write followed by a read
+    within the same call sees the pending value immediately -- matching
+    openpyxl's in-memory-until-.save() model). Nothing actually reaches
+    Google until `.flush()` is called (by WorkbookHandle.save()), at which
+    point every pending cell across this worksheet goes out in ONE batched
+    API call, regardless of how many separate .cell() calls staged them."""
+
+    def __init__(self, worksheet):
+        self._ws = worksheet
+        self._values = None
+        self._pending = {}  # (row, col) -> value
+
+    def _load(self):
+        if self._values is None:
+            self._values = self._ws.get_all_values()
+        return self._values
+
+    @property
+    def max_row(self):
+        vals = self._load()
+        pending_max = max((r for (r, _c) in self._pending), default=0)
+        return max(len(vals), pending_max)
+
+    def _row_width(self, row):
+        vals = self._load()
+        existing = len(vals[row - 1]) if 0 <= row - 1 < len(vals) else 0
+        pending = max((c for (r, c) in self._pending if r == row), default=0)
+        return max(existing, pending)
+
+    def _cell_value(self, row, col):
+        if (row, col) in self._pending:
+            return self._pending[(row, col)]
+        vals = self._load()
+        if 0 <= row - 1 < len(vals) and 0 <= col - 1 < len(vals[row - 1]):
+            v = vals[row - 1][col - 1]
+            return v if v != "" else None
+        return None
+
+    def iter_rows(self, min_row=1, max_row=None, values_only=True):
+        upper = max_row if max_row is not None else self.max_row
+        for r in range(min_row, upper + 1):
+            width = self._row_width(r)
+            if width == 0:
+                yield None
+                continue
+            yield tuple(self._cell_value(r, c) for c in range(1, width + 1))
+
+    def cell(self, row, column, value=None):
+        if value is not None:
+            self._pending[(row, column)] = value
+            return _CellRef(value)
+        return _CellRef(self._cell_value(row, column))
+
+    def append(self, values):
+        """Only ever hit by ensure_sheet() for a brand-new tab -- never
+        triggered for USA/UK/Poland 2026 in real use since they already
+        exist on the live Sheet."""
+        next_row = self.max_row + 1
+        for i, v in enumerate(values, start=1):
+            self._pending[(next_row, i)] = v
+
+    def flush(self):
+        if not self._pending:
+            return
+        from gspread.utils import rowcol_to_a1
+
+        data = [
+            {"range": rowcol_to_a1(r, c), "values": [[v]]}
+            for (r, c), v in self._pending.items()
+        ]
+        self._ws.batch_update(data, value_input_option="USER_ENTERED")
+        self._pending.clear()
+        self._values = None  # force a fresh read next time this handle is used
+
+
+class WorkbookHandle:
+    """Duck-types the small subset of openpyxl's Workbook interface used
+    across this codebase (.sheetnames, wb[name], .create_sheet(name),
+    .save(path)), backed by a live gspread Spreadsheet.
+
+    Returns the SAME WorksheetHandle on repeated wb[name] access within one
+    call, so a function that does e.g. `ws = ensure_sheet(wb, schema)` and
+    then reads/writes `ws` several times keeps one consistent read cache +
+    pending-write buffer, exactly like holding one openpyxl worksheet
+    object throughout a call."""
+
+    def __init__(self, spreadsheet):
+        self._sh = spreadsheet
+        self._open = {}
+
+    @property
+    def sheetnames(self):
+        return [w.title for w in self._sh.worksheets()]
+
+    def __getitem__(self, name):
+        if name not in self._open:
+            self._open[name] = WorksheetHandle(self._sh.worksheet(name))
+        return self._open[name]
+
+    def create_sheet(self, name):
+        ws = self._sh.add_worksheet(title=name, rows=1000, cols=30)
+        handle = WorksheetHandle(ws)
+        self._open[name] = handle
+        return handle
+
+    def save(self, path=None):
+        """No separate "save" step exists for Sheets the way it does for a
+        local .xlsx -- every write already lives on Google's servers the
+        moment .flush() runs. `path` is accepted (and ignored) purely so
+        call sites written as `wb.save(out_path or xlsx_path)` don't need
+        to change."""
+        for handle in self._open.values():
+            handle.flush()

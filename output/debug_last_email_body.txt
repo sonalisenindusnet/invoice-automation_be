@@ -1,0 +1,42 @@
+Subject: Invoice Summary
+From: Pratim Bhowmik <pratim.bhowmik@intglobal.com>
+Date: Fri, 7 Aug 2026 18:12:36 +0530
+body_kind: text
+------------------------------------------------------------
+Sl No. Particulars Details
+1 Pf Id 2800/BFS/50000000
+2 Account Name DE_COC_FC
+3 Client Name Bandhan Bank
+4 Invoice Value 70000
+5 Invoice Description Milestone (100% advance / UAT Sign-off / Go Live)
+6 Client Name Kumar
+7 Client Mail id (To and CC) kumar-dumy@bandhanbank.com
+8 INT CC mail id surai.avijit-dumy@intglobal.com,
+sheik.asifuddin-dumy@intglobal.com,
+9 Work Order Yes
+10 Master Project ID (Blank)
+11 Total Order Value 500000
+
+
+
+Pratim Bhowmik
+Senior Software Engineer | BFS
+123-456-7890 intglobal.com
+INT. - Innovation, Culture & Excellence
+<https://www.youtube.com/watch?v=1pk9N_yS3lU>
+INT. - LinkedIn <https://in.linkedin.com/company/indus-net-technologies>
+
+Locations
+US
+Canada
+UK
+Poland
+India
+Singapore
+IMPORTANT: The content of this email is confidential and is only intended
+for the recipient/recipients included in it and is the property of INT. It
+is strictly restricted to share any part of this letter with any third
+party without the sender's prior permission. If you have received this mail
+by mistake, please respond to it and delete it to ensure that such an error
+does not happen again. INT. does not accept any liability for virus
+infected mails.

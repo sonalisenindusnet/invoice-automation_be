@@ -1,0 +1,7 @@
+{
+  "pf_id": "2614/Retail-Diverse/1245",
+  "verified": false,
+  "fields": {},
+  "raw": null,
+  "error": "MIS API unreachable or timed out: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>"
+}

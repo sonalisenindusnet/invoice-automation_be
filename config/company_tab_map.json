@@ -1,0 +1,17 @@
+{
+  "_comment": "The lookup that decides which tab a new invoice request goes into. When a CP 'Invoice Summary' email names a client company, the code checks THIS file first (exact match, case/spacing-insensitive). Add every client you bill through here — this is the file to maintain, not the Python code. If a company isn't listed here, the code falls back to scanning the existing tabs (USA/UK/Poland 2026) for that exact company name already sitting in a row — if it finds one, it uses that tab AND adds the company here automatically so next time is instant. If neither finds a match, the invoice is flagged 'entity_unresolved' and NOT appended anywhere — it will never silently guess a tab for money.",
+  "_scope_note": "Foreign clients only for now (USA/UK/Poland) — no tax applied to any of them. India and Kar Ventures are intentionally not wired up. If an Indian client comes in, tell me and I'll add GST support + an India tab back in.",
+  "companies": [
+    { "company_name": "Somax Inc", "entity_key": "usa", "note": "seen in your uploaded tracker" },
+    { "company_name": "Emerge Telecom International, LLC", "entity_key": "usa", "note": "seen in your uploaded tracker" },
+    { "company_name": "TransPerfect Translations Limited(WebCertain Tech)", "entity_key": "uk", "note": "seen in your uploaded tracker" },
+    { "company_name": "Accuride International Ltd", "entity_key": "uk", "note": "seen in your uploaded tracker" },
+    { "company_name": "Northstar Switzerland SARL", "entity_key": "poland", "note": "seen in your uploaded tracker (Poland entity, bills in USD)" }
+  ],
+  "entity_tabs": {
+    "usa": "USA",
+    "uk": "UK",
+    "poland": "Poland 2026"
+  },
+  "_singapore_note": "No 'Singapore' tab exists in your tracker. If a CP email names a Singapore client, it will come back 'entity_unresolved' until you either add a Singapore tab (tell me and I'll wire it up the same way as the other three) or map that client to one of the existing tabs above."
+}

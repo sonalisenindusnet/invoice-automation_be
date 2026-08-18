@@ -1,0 +1,7 @@
+{
+  "_comment": "MIS project-info lookup API, added 2026-08-12. The key is NOT stored here -- set MIS_API_KEY in your .env file (see .env.example); sent as an 'x-api-key' header (changed 2026-08-12 -- was a Bearer JWT before that). This file only holds non-secret settings. Per explicit instruction, the key is refreshed by hand: update MIS_API_KEY in .env and restart the server whenever it changes/rotates -- no auto-refresh is built.",
+  "base_url": "http://13.235.37.117:8161",
+  "endpoint_path": "/api/projectinfo",
+  "timeout_seconds": 15,
+  "enabled": true
+}

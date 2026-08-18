@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+output/*.log
+output/processed_emails.json
+invoice_INT-*.pdf
+credentials/

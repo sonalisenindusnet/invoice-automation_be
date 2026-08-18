@@ -1,0 +1,37 @@
+{
+  "entity_key": "uk",
+  "legal_name": "Indus Net Technologies Pvt. Ltd.",
+  "title": "Invoice",
+  "footer_address_lines": ["3 More London Riverside", "London SE1 2RE, UK"],
+  "registration_label": "CIN",
+  "registration_no": "06174001",
+  "vat_label": "VAT NO",
+  "vat_no": "987 5092 65",
+  "query_line": "accountsint@indusnet.co.in | +91-33-2357 6070",
+  "currency": "GBP",
+  "currency_symbol": "£",
+  "table_mode": "single_line",
+  "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT(£)"],
+  "totals_show_currency_symbol": false,
+  "date_month_format": "full",
+  "date_year_digits": 4,
+  "show_month_subheader": false,
+  "subtotal_label": "Sub-Total",
+  "tax": {
+    "type": "vat",
+    "rate": 0.20,
+    "label": "Vat 20%",
+    "position": "after_subtotal",
+    "show_final_total_label": false
+  },
+  "amount_in_words": false,
+  "invoice_number_prefix": "INT/UK",
+  "financial_year_format": "26-27",
+  "due_days": 7,
+  "bank_details": {
+    "bank_name": "HSBC",
+    "account_name": "Indus Net Technologies Pvt. Ltd.",
+    "account_number": "71782509",
+    "sort_code": "40-02-03"
+  }
+}

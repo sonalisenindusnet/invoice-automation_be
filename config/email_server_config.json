@@ -1,0 +1,19 @@
+{
+  "_comment": "Credentials are NOT stored in this file. Before running email_server.py, set two environment variables: EMAIL_ADDRESS (the Gmail address to monitor) and EMAIL_APP_PASSWORD (a Google App Password — see README 'Running the server' section for how to generate one). This file only holds non-secret behavior settings.",
+  "_tracker_source_note": "Added 2026-08-14. The live tracker now lives on a native Google Sheet, not the local 'Invoice Traker.xlsx' file — a local .xlsx cannot support the automation writing to it at the same time a human has it open in Excel (OS-level file lock), which a real accountant does nearly continuously; a Sheet supports true concurrent multi-writer access with no locks at all. Set tracker_source to 'excel' (and it'll use tracker_xlsx_path exactly as before) to fall back to the old local-file behavior if ever needed.",
+  "tracker_source": "google_sheets",
+  "google_sheet_id": "1Pj7yz4opaAdv7TCjaGO_JMJaZGAV-5vFaLYPq9hk7PU",
+  "google_service_account_json": "../credentials/service_account.json",
+  "imap_host": "imap.gmail.com",
+  "imap_port": 993,
+  "imap_timeout_seconds": 45,
+  "mailbox": "INBOX",
+  "subject_contains": "Invoice Summary",
+  "poll_interval_seconds": 60,
+  "tracker_xlsx_path": "../Invoice Traker.xlsx",
+  "state_file": "../output/processed_emails.json",
+  "log_file": "../output/email_server.log",
+  "drafts_folder_override": null,
+  "mark_source_email_as_read": true,
+  "requested_by_fallback": "CP (via email)"
+}

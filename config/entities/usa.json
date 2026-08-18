@@ -1,0 +1,30 @@
+{
+  "entity_key": "usa",
+  "legal_name": "Indus Net Technologies Inc.",
+  "title": "Invoice",
+  "footer_address_lines": ["1310 S Vista Ave Ste 28", "Boise Idaho 83705"],
+  "registration_label": "CIN",
+  "registration_no": "45-4016690",
+  "query_line": "accountsint@indusnet.co.in | +91-33-2357 6070",
+  "currency": "USD",
+  "currency_symbol": "$",
+  "table_mode": "per_resource",
+  "table_columns": ["S/N", "Resource Names", "AMOUNT($)"],
+  "show_month_subheader": true,
+  "subtotal_label": "Sub-Total",
+  "monthly_billing_label": "Total Monthly Billing",
+  "tax": null,
+  "amount_in_words": true,
+  "invoice_number_prefix": "INT/USA",
+  "financial_year_format": "26-27",
+  "due_days": 30,
+  "bank_details": {
+    "bank_name": "Column N.A.",
+    "aba_routing_number": "121145433",
+    "bank_address": "1 Letterman Drive, Building A, Suite A4-700 San Francisco, CA 94129",
+    "beneficiary_name": "Indus Net Technologies Inc.",
+    "account_number": "106542919924324",
+    "type_of_account": "Checking",
+    "beneficiary_address": "1310 S Vista Ave Ste, Boise, ID 83705"
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "_comment": "Maps rows of the CP's 'Invoice Summary' table to internal keys. Anchored on Sl No (most robust) with label aliases as fallback if Sl No is missing/renumbered. Edit this file, not the parser, when the CP's email format changes.",
+  "fields": [
+    {
+      "sl_no": 1,
+      "key": "pf_id",
+      "label_aliases": ["Pf Id", "PF ID", "PFID"],
+      "type": "text",
+      "required": true
+    },
+    {
+      "sl_no": 2,
+      "key": "account_name",
+      "label_aliases": ["Account Name"],
+      "type": "text",
+      "required": true
+    },
+    {
+      "sl_no": 3,
+      "key": "client_company",
+      "label_aliases": ["Client Name"],
+      "type": "text",
+      "required": true,
+      "note": "First 'Client Name' row = the client company (e.g. Bandhan Bank)."
+    },
+    {
+      "sl_no": 4,
+      "key": "invoice_value",
+      "label_aliases": ["Invoice Value"],
+      "type": "currency",
+      "required": true
+    },
+    {
+      "sl_no": 5,
+      "key": "invoice_description",
+      "label_aliases": ["Invoice Description"],
+      "type": "text",
+      "required": true
+    },
+    {
+      "sl_no": 6,
+      "key": "client_contact_person",
+      "label_aliases": ["Client Name"],
+      "type": "text",
+      "required": false,
+      "note": "Second 'Client Name' row = the named contact person at the client."
+    },
+    {
+      "sl_no": 7,
+      "key": "client_mail_to",
+      "label_aliases": ["Client Mail id (To and CC)", "Client Mail Id", "Client Email"],
+      "type": "email_list",
+      "required": true
+    },
+    {
+      "sl_no": 8,
+      "key": "int_cc_mail",
+      "label_aliases": ["INT CC mail id", "Internal CC", "INT CC"],
+      "type": "email_list",
+      "required": false
+    },
+    {
+      "sl_no": 9,
+      "key": "work_order",
+      "label_aliases": ["Work Order"],
+      "type": "text",
+      "required": false
+    },
+    {
+      "sl_no": 10,
+      "key": "master_project_id",
+      "label_aliases": ["Master Project ID"],
+      "type": "text",
+      "required": false,
+      "note": "Often blank in practice; flagged as a warning, not a hard failure, since MIS validation is a later phase."
+    },
+    {
+      "sl_no": 11,
+      "key": "total_order_value",
+      "label_aliases": ["Total Order Value"],
+      "type": "currency",
+      "required": false
+    },
+    {
+      "sl_no": 15,
+      "key": "client_address",
+      "label_aliases": ["Client Address", "Billing Address"],
+      "type": "text",
+      "required": false,
+      "note": "Not part of the original 11-field CP email — added so the invoice PDF can show the client's full address if a CP includes it. Safe to leave out entirely; existing emails without this row are unaffected. Moved from Sl No 12 to 15 on 2026-08-13 to free up 12 for the new 'Currency' field below (per instruction: 'here will be 12. currency...') — colliding two fields on the same Sl No would make them silently pick up each other's value whenever a real email numbers a row 12, so this had to move rather than just being left alone."
+    },
+    {
+      "sl_no": 13,
+      "key": "po_no",
+      "label_aliases": ["PO No", "PO No.", "Purchase Order No"],
+      "type": "text",
+      "required": false,
+      "note": "Poland invoices show a PO No./PO Dt. pair. Optional — only rendered if present."
+    },
+    {
+      "sl_no": 14,
+      "key": "po_date",
+      "label_aliases": ["PO Dt", "PO Dt.", "PO Date", "Purchase Order Date"],
+      "type": "text",
+      "required": false
+    },
+    {
+      "sl_no": 12,
+      "key": "currency",
+      "label_aliases": ["Currency"],
+      "type": "currency_code",
+      "required": false,
+      "note": "NEW 2026-08-13, per explicit instruction ('here will be 12. currency: inr/dollar will be added in the body'). e.g. 'INR' or 'Dollar' -- normalized to a standard 3-letter code (see parse_invoice_summary.py's CURRENCY_ALIASES) before being written to the tab's Currency column. Optional: if this row is missing from the email, the tab's own 'default_currency' (config/tabs/*.json) is used instead, same as before this field existed."
+    }
+  ]
+}
