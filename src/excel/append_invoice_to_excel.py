@@ -49,26 +49,10 @@ from mis.mis_api import fetch_project_info
 # `xlsx_path` to minimize the diff across this already-carefully-tested file.
 from utils.tracker_io import load_tracker_with_retry as load_workbook_with_retry
 
-# The manual-review gate uses TWO independent columns rather than one
-# text column with more states, per explicit instruction (2026-08-12) --
-# "email drafted is done or not maintained by a diff flag. email_drafted:
-# boolean, so you can easily track":
-#
-#   "Review Status"  -- set ONLY by a human, and never overwritten by this
-#                        code afterwards. "" (blank) = row predates this
-#                        feature; PENDING = just appended, awaiting review;
-#                        REVIEWED = approved. This column is a permanent
-#                        record of the human's decision.
-#   "Email Drafted"  -- a boolean this code owns entirely. False/blank
-#                        until the invoice-generation pass actually creates
-#                        the PDF + Gmail draft for that row, then flips to
-#                        True. The invoice-generation pass's "is this row
-#                        ready" query is: Review Status == REVIEWED AND
-#                        Email Drafted is not True -- so re-running it never
-#                        reprocesses a row, and a human's REVIEWED marking
-#                        is never silently changed by automation.
+# Email Drafted is owned by the draft server. New rows start as False; once
+# their PDF and Gmail draft are created, it becomes True. Review Status is
+# retained as tracker data but is not part of the draft-server selection rule.
 REVIEW_STATUS_PENDING = "Pending Review"
-REVIEW_STATUS_REVIEWED = "Reviewed"
 
 # MIS project-info check, added 2026-08-12 (real endpoint now exists --
 # see mis/mis_api.py). Called once per append, right after the duplicate
@@ -82,9 +66,8 @@ MIS_VERIFIED_KEY = "mis_verification_done"
 
 # Added 2026-08-14, per explicit instruction ("add the invoice creation
 # date, and payment due date today + 7 day logic"). Invoice creation date
-# was already being set correctly (append_invoice() defaults invoice_date
-# to date.today().isoformat() whenever the caller -- email_server.py's live
-# Pass 1 -- doesn't pass one explicitly; nothing changed there). Payment
+# defaults to date.today().isoformat() whenever the caller does not supply
+# one. Payment
 # due date was always blank before this -- now computed as invoice_date + 7
 # calendar days for every new row, every tab (USA/UK/Poland all use the
 # same rule; no tab-specific override requested). Never blocks an append:
@@ -498,15 +481,26 @@ def _is_truthy_flag(value):
     return str(value).strip().lower() in ("true", "1", "yes")
 
 
+def _is_false_flag(value):
+    """Return True only for an explicitly false checkbox/boolean value.
+
+    A blank cell is deliberately *not* eligible: historical tracker rows
+    can be blank because the Email Drafted column was added later, and they
+    must never create drafts merely because the automation is started.
+    """
+    if isinstance(value, bool):
+        return not value
+    return str(value).strip().lower() in ("false", "0", "no")
+
+
 def find_rows_ready_for_invoicing(xlsx_path, entity_key):
-    """The other half of the review gate: rows a human has flagged
-    'Reviewed' in Review Status, where Email Drafted is not yet True. Only
-    an exact (trimmed, case-insensitive) match on REVIEW_STATUS_REVIEWED
-    counts for the review side — blank/historical rows are skipped. Email
-    Drafted is checked independently, so re-running this on every poll
-    never reprocesses a row, and a human's REVIEWED marking is never
-    touched by this code (see the module-level comment on the two-flag
-    design).
+    """Return rows whose Email Drafted flag is not True.
+
+    The invoice-generation pass is driven exclusively by Email Drafted:
+    False, "FALSE", "0", or "No" means the row is ready; blank cells and
+    True, "TRUE", "1", or "Yes" are skipped. Review Status is intentionally
+    not used as a gate, so the workflow matches the Google Sheet automation
+    requirement exactly.
 
     Returns a list of row dicts (same shape as append_invoice's row_dict),
     read straight back out of the sheet — this is the ONLY way the
@@ -514,7 +508,7 @@ def find_rows_ready_for_invoicing(xlsx_path, entity_key):
     email-read step that originally appended the row.
     """
     schema = load_schema(entity_key)
-    if not _has_column(schema, "review_status"):
+    if not _has_column(schema, "email_drafted"):
         return []
 
     wb = load_workbook_with_retry(xlsx_path, data_only=True)
@@ -525,10 +519,7 @@ def find_rows_ready_for_invoicing(xlsx_path, entity_key):
 
     ready = []
     for r in existing_rows(ws, schema):
-        status = (r.get("review_status") or "").strip().lower()
-        if status != REVIEW_STATUS_REVIEWED.lower():
-            continue
-        if _is_truthy_flag(r.get("email_drafted")):
+        if not _is_false_flag(r.get("email_drafted")):
             continue
         ready.append(r)
     return ready

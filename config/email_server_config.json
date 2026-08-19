@@ -7,13 +7,8 @@
   "imap_host": "imap.gmail.com",
   "imap_port": 993,
   "imap_timeout_seconds": 45,
-  "mailbox": "INBOX",
-  "subject_contains": "Invoice Summary",
   "poll_interval_seconds": 60,
   "tracker_xlsx_path": "../Invoice Traker.xlsx",
-  "state_file": "../output/processed_emails.json",
   "log_file": "../output/email_server.log",
-  "drafts_folder_override": null,
-  "mark_source_email_as_read": true,
-  "requested_by_fallback": "CP (via email)"
+  "drafts_folder_override": null
 }

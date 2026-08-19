@@ -66,7 +66,7 @@ if str(BASE) not in sys.path:
 # Existing project imports
 # ---------------------------------------------------------------------------
 
-from scripts.env_loader import load_env_file
+from src.utils.env_loader import load_env_file
 
 from src.excel.append_invoice_to_excel import append_invoice
 

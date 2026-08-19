@@ -25,13 +25,12 @@ WHAT THIS MODULE DOES: dispatches on the shape of `tracker_ref`:
        (.sheetnames, wb[name], .create_sheet(name), .save(path)).
   - a plain string (a local .xlsx file path)
     -> falls back to the original openpyxl-based load_workbook_with_retry()
-       unchanged. Kept for the CLI debug tools (mark_email_sent.py,
-       draft_email_from_excel_row.py's find_row()) that still point at a
-       local file for manual spot-checks, and as an emergency fallback.
+       unchanged. Kept for the manual row-inspection CLI and as an emergency
+       fallback.
 
 This design means NONE of the actual business logic in
-append_invoice_to_excel.py (tax calc, invoice numbering incl. the Poland
-formula-column fix, MIS check, duplicate check, review-status gate) had
+append_invoice_to_excel.py (tax calc, invoice numbering, MIS check, and
+duplicate check) had
 to change -- only this one I/O layer underneath it did.
 
 Google Sheets has no separate "cached formula value" concept the way a

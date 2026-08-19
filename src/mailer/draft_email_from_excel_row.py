@@ -119,10 +119,9 @@ def _row_to_intl_row(entity_key, row):
     the door; not a pixel-perfect match to a multi-resource USA invoice
     until that data is available somewhere.
 
-    client_address / po_no / po_date are OPTIONAL fields (see
-    config/field_schema.json) — most CP emails won't include them, in which
-    case these just come back empty and the PDF quietly omits those lines,
-    exactly like it already does for due_date."""
+    client_address / po_no / po_date are optional tracker fields. When they
+    are empty, the PDF quietly omits those lines, exactly like it already
+    does for due_date."""
     base_amount = _base_amount_for_intl(row)
     description = row.get("invoice_description") or ""
     return {
