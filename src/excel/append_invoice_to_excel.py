@@ -32,8 +32,6 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-import openpyxl
-
 SRC_DIR = Path(__file__).resolve().parent.parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
@@ -84,10 +82,6 @@ def _compute_due_date(invoice_date_str, days=DEFAULT_DUE_DATE_OFFSET_DAYS):
     except (TypeError, ValueError):
         return ""
     return (d + timedelta(days=days)).isoformat()
-
-
-def _col_letter(idx):
-    return openpyxl.utils.get_column_letter(idx)
 
 
 def ensure_sheet(wb, schema):
@@ -467,18 +461,6 @@ def find_row_index(ws, schema, invoice_no):
         if (val or "").strip() == invoice_no.strip():
             return row_idx
     return None
-
-
-def _is_truthy_flag(value):
-    """Excel booleans round-trip cleanly through openpyxl as Python True/False
-    when written natively (which mark_email_drafted below does) — but treat
-    a stray "TRUE"/"1" text value as truthy too, in case someone types it by
-    hand instead of using a real checkbox/boolean cell."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in ("true", "1", "yes")
 
 
 def _is_false_flag(value):

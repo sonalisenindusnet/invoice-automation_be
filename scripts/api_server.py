@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
@@ -98,6 +99,24 @@ app = FastAPI(
     title="Invoice API",
     description="Invoice generation API",
     version="1.0.0",
+)
+
+# Added 2026-08-19: the frontend (browser, e.g. http://localhost:3000) calls
+# this API cross-origin, which means the browser sends a CORS preflight
+# OPTIONS request before every real POST. Without this middleware, FastAPI
+# has no OPTIONS handler registered for /invoice/api/v1/invoice-generation
+# at all, so the preflight came back 405 and the browser never even
+# attempted the real request -- confirmed live (see the 405s in
+# email_server.log). allow_origins is "*" (no cookies/credentials are used
+# by this API, so this is safe) rather than credentialed, which lets any
+# frontend origin call it; tighten to specific origins here if this API is
+# ever exposed beyond your own frontend.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

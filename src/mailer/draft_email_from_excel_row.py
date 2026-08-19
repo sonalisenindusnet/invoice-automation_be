@@ -31,14 +31,12 @@ import re
 import sys
 from pathlib import Path
 
-import openpyxl
-
 BASE = Path(__file__).resolve().parent.parent.parent
 SRC_DIR = BASE / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from excel.append_invoice_to_excel import header_row_index, existing_rows
+from excel.append_invoice_to_excel import existing_rows
 from excel.entity_resolver import load_schema
 from pdf.generate_invoice_pdf_intl import render_international_invoice
 from utils.xlsx_io import load_workbook_with_retry
