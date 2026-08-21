@@ -32,6 +32,7 @@ the moments that still happen anyway (autosave, background recalculation),
 NOT a substitute for that.
 """
 import logging
+import threading
 import time
 import xml.etree.ElementTree as ET
 import zipfile
@@ -45,6 +46,15 @@ logger = logging.getLogger("email_server.xlsx_io")
 # sheet, etc.) -- those should surface immediately, not get masked by a
 # retry loop.
 TRANSIENT_ERRORS = (zipfile.BadZipFile, ET.ParseError)
+
+# Shared by every part of this process that does a read-modify-write cycle
+# against the tracker file (save_api's append, the draft poller's row
+# scan-and-update) -- serializes them so two such cycles running at nearly
+# the same moment can't both read the "before" state and then clobber each
+# other's write. Does not protect against a human editing the file in Excel
+# at the same instant; load_workbook_with_retry above is what smooths over
+# that.
+TRACKER_LOCK = threading.Lock()
 
 
 def load_workbook_with_retry(path, data_only=False, retries=4, delay_seconds=0.75):

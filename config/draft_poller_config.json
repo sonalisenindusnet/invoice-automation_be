@@ -1,0 +1,8 @@
+{
+  "tracker_xlsx_path": "../Invoice Traker.xlsx",
+  "poll_interval_seconds": 60,
+  "imap_host": "imap.gmail.com",
+  "imap_port": 993,
+  "imap_timeout_seconds": 45,
+  "drafts_folder_override": null
+}
