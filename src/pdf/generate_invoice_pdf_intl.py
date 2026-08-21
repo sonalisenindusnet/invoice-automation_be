@@ -1,22 +1,17 @@
 """
 generate_invoice_pdf_intl.py
 
-Per-entity invoice PDF rendering for real client-facing formats: USA, UK,
-Singapore, Poland. Each of these is a genuinely different layout (see
-config/entities/*.json for the legal name / address / tax rule / bank
-details / table-shape differences extracted from the reference PDFs).
+Per-entity invoice PDF rendering for USA, UK, Poland (live) and Singapore
+(config support only, not wired into the live pipeline yet). Each entity's
+layout/tax rule/bank details live in config/entities/*.json.
 
 Entry point:
     render_international_invoice(entity_key, row, out_path)
 
-    entity_key: "usa" | "uk" | "singapore" | "poland"
-    row: a dict describing one invoice — see the docstring on
-         render_international_invoice() below for the exact shape.
+    entity_key: "usa" | "uk" | "poland" | "singapore"
+    row: a dict describing one invoice — see render_international_invoice()'s
+         docstring below for the exact shape.
     out_path: str/Path to write the PDF to
-
-USA/UK/Poland are wired into the live pipeline (see entity_resolver.py and
-draft_email_from_excel_row.py); Singapore isn't yet, since no Singapore
-tab exists in the real tracker.
 """
 import calendar
 import json
@@ -37,32 +32,18 @@ from reportlab.graphics.shapes import Drawing, Circle, String
 CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
 ENTITIES_DIR = CONFIG_DIR / "entities"
 
-# Currency SYMBOL lookup, keyed by the same standard 3-letter codes that
-# parse_invoice_summary.py's CURRENCY_ALIASES normalizes the email's
-# "Currency" field to. Added 2026-08-13: this renderer used to ALWAYS use
-# the entity's own static default currency/currency_symbol
-# (config/entities/*.json) no matter what currency was actually parsed out
-# of the CP's email and saved in the Excel row's Currency column -- so a
-# USA-tab invoice always showed "$"/"USD" even after the accounts team
-# wrote "Currency: INR" in the email and it was correctly saved to the
-# sheet. Fixed by preferring the row's OWN currency (real, already-saved
-# value) whenever present; only falling back to the entity's static default
-# when the row has none at all (e.g. an older row saved before the
-# Currency column/field existed, or an unrecognized code with no symbol).
+# Currency symbol lookup, keyed by the 3-letter code saved in the row's
+# Currency column. The row's own currency always wins over the entity's
+# static default (config/entities/*.json) — an invoice must show whatever
+# currency was actually billed, not just this entity's usual one.
 CURRENCY_SYMBOLS = {
     "USD": "$", "GBP": "£", "INR": "Rs.", "EUR": "€", "PLN": "PLN", "SGD": "S$",
 }
 
-# config/entities/*.json's "table_columns" bakes the entity's DEFAULT
-# currency symbol as static text into the amount column header itself
-# (e.g. "AMOUNT($)" for USA, "AMOUNT(£)" for UK) -- found 2026-08-13 as a
-# SECOND place (besides the totals/amount-in-words line, fixed above) this
-# renderer was showing the wrong currency: even after currency_symbol was
-# correctly resolved from the row's real Currency value, this header text
-# was untouched static config, so a USA-tab invoice billed in INR still
-# showed the column header "AMOUNT($)". Fixed by re-writing whatever
-# symbol is inside the parens to match the ACTUAL resolved currency_symbol
-# for this invoice, rather than trusting the static config text.
+# config/entities/*.json's "table_columns" bakes a default currency symbol
+# into the amount column header text itself (e.g. "AMOUNT($)"). This
+# rewrites whatever's inside the parens to match the invoice's actual
+# resolved currency_symbol, so the header never disagrees with the totals.
 _AMOUNT_HEADER_RE = re.compile(r"^(AMOUNT)\(.*\)$", re.IGNORECASE)
 
 
@@ -121,12 +102,9 @@ def _int_to_words_western(n):
 
 def _int_to_words_indian(n):
     """Integer -> English words using the Indian digit-grouping convention
-    (Crore / Lakh / Thousand, i.e. 2-2-3 grouping) rather than the Western
-    Thousand/Million/Billion (3-3-3) grouping — e.g. 776440 -> 'Seven Lakh
-    Seventy Six Thousand Four Hundred Forty', not 'Seven Hundred Seventy Six
-    Thousand...'. This is the convention Indian GST invoices use; getting it
-    wrong here would misstate the amount for an Indian reader even though
-    the digits are correct."""
+    (Crore / Lakh / Thousand, 2-2-3 grouping) rather than Western
+    Thousand/Million/Billion (3-3-3) grouping — the convention Indian GST
+    invoices use."""
     if n == 0:
         return "Zero"
     crore, n = divmod(n, 10_000_000)
@@ -161,9 +139,8 @@ def _fmt_money(v, symbol="", decimals=2):
 
 
 def _fmt_money_or_dash(v, symbol=""):
-    """Poland's real invoice shows a bare '-' for a zero-rate tax line
-    ('Add : VAT 0%    -') rather than '$ 0.00' — matches that convention
-    generally, for any entity/amount that comes out to exactly zero."""
+    """A zero-rate tax line shows a bare '-' (e.g. Poland's 'Add : VAT 0%    -')
+    instead of '$ 0.00', for any entity/amount that comes out to exactly zero."""
     try:
         if float(v) == 0:
             return "-"
@@ -183,8 +160,7 @@ def _ordinal_suffix(n):
 
 def _parse_iso_date(raw):
     """Best-effort parse of 'YYYY-MM-DD' / 'YYYY/MM/DD' -> datetime, or None
-    if it isn't in one of those shapes (e.g. blank, or already hand-
-    formatted some other way)."""
+    if it isn't in one of those shapes."""
     if not raw:
         return None
     raw = str(raw).strip()
@@ -197,26 +173,23 @@ def _parse_iso_date(raw):
 
 
 def _format_display_date(raw, month_format="abbr", year_digits=2):
-    """'2026-08-05' -> \"05th Aug'26\" (Singapore/Poland style) or
-    \"05th August'2026\" (UK style, month_format='full'/year_digits=4) —
-    both zero-pad the day, per the real invoices. Falls back to returning
-    the input unchanged if it isn't a parseable ISO date (e.g. already
-    hand-formatted, or blank)."""
+    """'2026-08-05' -> "05th Aug'26" (Poland/Singapore style) or
+    "05th August'2026" (UK style: month_format='full', year_digits=4).
+    Returns the input unchanged if it isn't a parseable ISO date."""
     if not raw:
         return ""
     dt = _parse_iso_date(raw)
     if dt is None:
-        return str(raw).strip()  # already formatted some other way — show as-is rather than guess
+        return str(raw).strip()
     year = dt.strftime("%Y") if year_digits == 4 else dt.strftime("%y")
     month = calendar.month_name[dt.month] if month_format == "full" else calendar.month_abbr[dt.month]
     return f"{dt.day:02d}{_ordinal_suffix(dt.day)} {month}'{year}"
 
 
 def _resolve_due_date(entity, row):
-    """Row-supplied due_date wins if present (e.g. a genuine tracker value).
-    Otherwise, if this entity has a due_days rule (USA: 30, UK: 7) and we
-    have an invoice_date to count from, compute it — due_days was already
-    being configured per entity but never actually used anywhere."""
+    """The row's own due_date wins if present. Otherwise, if this entity has
+    a due_days rule (USA: 30, UK: 7) and an invoice_date to count from,
+    compute it from that."""
     if row.get("due_date"):
         return row["due_date"]
     due_days = entity.get("due_days")
@@ -227,8 +200,8 @@ def _resolve_due_date(entity, row):
 
 
 def _logo_drawing(diameter_mm=15):
-    """Draws the round 'INT.' logo seen on every real invoice — a filled
-    blue circle with the wordmark in white. No image asset needed."""
+    """The round 'INT.' logo shown on every invoice — a filled blue circle
+    with the wordmark in white. No image asset needed."""
     d_pt = diameter_mm * mm
     d = Drawing(d_pt, d_pt)
     d.add(Circle(d_pt / 2, d_pt / 2, d_pt / 2, fillColor=colors.HexColor("#1961ac"), strokeColor=None))
@@ -253,10 +226,8 @@ def _styles():
 
 
 def _bill_to_and_meta_table(entity, row, sty):
-    """Client block on the left, invoice meta on the right — directly, with
-    no 'Bill To' / 'Invoice Details' captions above them. None of the real
-    invoices (UK/Singapore/Poland) show those captions; they just show the
-    client name (bold) + address, and the meta lines, right away."""
+    """Client block on the left, invoice meta on the right, with no
+    "Bill To" / "Invoice Details" captions — matches every real invoice."""
     normal = sty["normal"]
 
     client_lines = [f"<b>{row.get('client_name') or ''}</b>"]
@@ -282,9 +253,7 @@ def _bill_to_and_meta_table(entity, row, sty):
     if entity.get("vat_no") and entity["entity_key"] == "uk":
         meta_lines.append(f"{entity.get('vat_label', 'VAT NO')}: {entity['vat_no']}")
 
-    # India: the CLIENT's own GSTIN and Place-of-Supply are legally required
-    # on the invoice, alongside our GSTIN in the footer — confirmed present
-    # on every real row in your tracker's Kar Ventures/Bad Debt tabs.
+    # India-specific fields, not used by any currently-live entity.
     if entity.get("show_client_gst_fields"):
         if row.get("client_gstin"):
             meta_lines.append(f"Client GSTIN: {row['client_gstin']}")
@@ -299,9 +268,9 @@ def _bill_to_and_meta_table(entity, row, sty):
 
 
 def _line_items_table_per_resource(entity, row, sty, currency_symbol):
-    """USA-style: one row per resource, then a bold monthly-billing subtotal
-    row, then a Sub-Total row (the real invoice repeats the same figure on
-    both rows — kept as-is rather than assumed to be a typo)."""
+    """USA-style: one row per resource, a bold monthly-billing subtotal row,
+    then a Sub-Total row (the real invoice repeats the same figure on both
+    rows on purpose)."""
     cols = _localize_column_headers(entity["table_columns"], currency_symbol)
     normal = sty["normal"]
     header_row = [Paragraph(f"<b>{c}</b>", ParagraphStyle(
@@ -335,11 +304,8 @@ def _line_items_table_per_resource(entity, row, sty, currency_symbol):
 
 
 def _line_items_table_single_line(entity, row, sty, currency_symbol):
-    """UK/Singapore/Poland/India-style: one row, a (often multi-line)
-    description, with a single total amount. India's real GST tabs
-    (Kar Ventures/Bad Debt) also carry an HSN/SAC code per line — a 4th
-    'table_columns' entry (checked by count, not by entity_key) triggers
-    that extra column so this stays generic rather than India-specific."""
+    """UK/Poland/Singapore/India-style: one row, a (often multi-line)
+    description, one total amount."""
     cols = _localize_column_headers(entity["table_columns"], currency_symbol)
     normal = sty["normal"]
     description = row.get("description") or (row.get("line_items") or [{}])[0].get("label", "")
@@ -353,6 +319,8 @@ def _line_items_table_single_line(entity, row, sty, currency_symbol):
         "HeadWhite", parent=normal, textColor=colors.white, fontSize=9
     )) for c in cols]
 
+    # India's GST tabs add an HSN/SAC code column — this entity has one iff
+    # its table_columns config lists 4 columns instead of the usual 3.
     has_hsn_column = len(cols) == 4
     if has_hsn_column:
         data_row = ["1", Paragraph(description_html, normal), row.get("hsn") or "", _fmt_money(amount, "")]
@@ -378,12 +346,12 @@ def _line_items_table_single_line(entity, row, sty, currency_symbol):
 
 
 def _finalize_totals_table(rows, entity, total, csym, extra_style=None):
-    """Shared table-building step for all tax positions below. If this
+    """Shared table-building step for every tax layout below. When this
     entity's amount-in-words is meant to REPLACE the final 'Total' label
-    (Poland: the real invoice's last row reads 'Three Thousand $ 3,000.00'
-    instead of 'Total $ 3,000.00'), append that as the actual final row here
-    — rather than as a separate paragraph after the table — so the bold +
-    line-above styling (which always targets the last row) lands on it."""
+    (e.g. Poland: the last row reads 'Three Thousand $ 3,000.00', not
+    'Total $ 3,000.00'), append it as the actual final row here — not as a
+    separate paragraph after the table — so the bold + line-above styling
+    (which always targets the last row) lands on it."""
     if entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label"):
         words_system = entity.get("amount_in_words_system", "western")
         rows = rows + [[amount_in_words(total, words_system), _fmt_money(total, csym)]]
@@ -401,82 +369,90 @@ def _finalize_totals_table(rows, entity, total, csym, extra_style=None):
     return table
 
 
-def _totals_block(entity, row, sty, subtotal, currency_symbol):
-    """Builds the subtotal/tax/total rows below the line-items table,
-    following each entity's own tax position/labelling — this is the part
-    that differs the most across the four real invoices.
+def _totals_cgst_sgst(entity, subtotal, csym):
+    """India layout: separate CGST + SGST rows, then the total."""
+    tax_cfg = entity["tax"]
+    cgst = round(subtotal * tax_cfg["cgst_rate"], 2)
+    sgst = round(subtotal * tax_cfg["sgst_rate"], 2)
+    total = subtotal + cgst + sgst
+    rows = [
+        [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(subtotal, csym)],
+        [tax_cfg.get("cgst_label", "CGST"), _fmt_money_or_dash(cgst, csym)],
+        [tax_cfg.get("sgst_label", "SGST"), _fmt_money_or_dash(sgst, csym)],
+    ]
+    if not (entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label")):
+        rows.append(["Total", _fmt_money(total, csym)])
+    return [_finalize_totals_table(rows, entity, total, csym)], total
 
-    Whether a currency symbol appears inline on THESE rows (as opposed to
-    just in the "AMOUNT(...)" column header) varies by entity: UK's real
-    invoice shows plain numbers here, Singapore and Poland show '$' inline.
-    Controlled by entity["totals_show_currency_symbol"] (default True)."""
+
+def _totals_before_subtotal(entity, subtotal, tax_amount, total, csym):
+    """Poland layout: 'Add : VAT x%' line (dash if zero), then Sub-Total."""
+    tax_cfg = entity["tax"]
+    rows = [[tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
+            [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(total, csym)]]
+    return [_finalize_totals_table(rows, entity, total, csym)], total
+
+
+def _totals_after_subtotal(entity, subtotal, tax_amount, total, csym):
+    """UK layout: explicit Sub-Total row, then 'Vat x%', then a final
+    unlabelled total row (unless amount-in-words replaces it)."""
+    tax_cfg = entity["tax"]
+    rows = [
+        [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(subtotal, csym)],
+        [tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
+    ]
+    if not (entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label")):
+        rows.append(["", _fmt_money(total, csym)])
+    return [_finalize_totals_table(rows, entity, total, csym)], total
+
+
+def _totals_verbose_after_subtotal(entity, subtotal, tax_amount, total, csym):
+    """Singapore layout: fully spelled-out labels, bold final line."""
+    tax_cfg = entity["tax"]
+    rows = [
+        [tax_cfg.get("subtotal_label", "Total amount payable excluding GST"), _fmt_money(subtotal, csym)],
+        [tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
+        [tax_cfg.get("total_label", "Total amount payable including GST"), _fmt_money(total, csym)],
+    ]
+    table = _finalize_totals_table(
+        rows, entity, total, csym,
+        extra_style=[("FONTSIZE", (0, -1), (-1, -1), 11)],
+    )
+    return [table], total
+
+
+def _totals_block(entity, row, sty, subtotal, currency_symbol):
+    """Builds the subtotal/tax/total rows below the line-items table. Which
+    layout to use comes from entity["tax"]["position"] — each real invoice
+    format (USA/UK/Poland/Singapore/India) lays these rows out differently.
+
+    Whether a currency symbol appears inline on these rows (vs. only in the
+    "AMOUNT(...)" column header) varies by entity — controlled by
+    entity["totals_show_currency_symbol"] (default True)."""
     tax_cfg = entity.get("tax")
-    story = []
     csym = currency_symbol if entity.get("totals_show_currency_symbol", True) else ""
 
     if tax_cfg is None:
-        # USA: no tax line at all — Sub-Total (already rendered in the
-        # line-items table) IS the total. Nothing to add here; if this
-        # entity's amount-in-words doesn't replace a label (USA doesn't),
-        # render_international_invoice() adds it as its own line instead.
-        return story, subtotal
+        # USA: no tax line at all — Sub-Total (already in the line-items
+        # table) IS the total.
+        return [], subtotal
 
     if tax_cfg["position"] == "cgst_sgst_after_subtotal":
-        # India: two separate tax lines (CGST + SGST), each its own row,
-        # THEN the total — per the CGST/SGST split confirmed in your real
-        # Kar Ventures/Bad Debt tabs (9% + 9%, always intra-state for now).
-        cgst = round(subtotal * tax_cfg["cgst_rate"], 2)
-        sgst = round(subtotal * tax_cfg["sgst_rate"], 2)
-        total = subtotal + cgst + sgst
-        rows = [
-            [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(subtotal, csym)],
-            [tax_cfg.get("cgst_label", "CGST"), _fmt_money_or_dash(cgst, csym)],
-            [tax_cfg.get("sgst_label", "SGST"), _fmt_money_or_dash(sgst, csym)],
-        ]
-        if not (entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label")):
-            rows.append(["Total", _fmt_money(total, csym)])
-        story.append(_finalize_totals_table(rows, entity, total, csym))
-        return story, total
+        return _totals_cgst_sgst(entity, subtotal, csym)
 
-    rate = tax_cfg["rate"]
-    tax_amount = round(subtotal * rate, 2)
+    tax_amount = round(subtotal * tax_cfg["rate"], 2)
     total = subtotal + tax_amount
 
-    if tax_cfg["position"] == "before_subtotal":
-        # Poland: "Add : VAT 0%" line shown (dash if zero), then Sub-Total
-        rows = [[tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
-                [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(total, csym)]]
-        story.append(_finalize_totals_table(rows, entity, total, csym))
+    layout_builders = {
+        "before_subtotal": _totals_before_subtotal,
+        "after_subtotal": _totals_after_subtotal,
+        "verbose_after_subtotal": _totals_verbose_after_subtotal,
+    }
+    build_layout = layout_builders.get(tax_cfg["position"])
+    if build_layout is None:
+        return [], subtotal  # unknown tax position -- no tax line rendered
 
-    elif tax_cfg["position"] == "after_subtotal":
-        # UK: explicit Sub-Total row (NOT already shown anywhere else —
-        # the line-items table only shows the single item amount), then
-        # "Vat 20%", then a final unlabelled total row (unless amount-in-
-        # words replaces it).
-        rows = [
-            [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(subtotal, csym)],
-            [tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
-        ]
-        if not (entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label")):
-            rows.append(["", _fmt_money(total, csym)])
-        story.append(_finalize_totals_table(rows, entity, total, csym))
-
-    elif tax_cfg["position"] == "verbose_after_subtotal":
-        # Singapore: fully spelled-out labels, bold final line.
-        rows = [
-            [tax_cfg.get("subtotal_label", "Total amount payable excluding GST"), _fmt_money(subtotal, csym)],
-            [tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
-            [tax_cfg.get("total_label", "Total amount payable including GST"), _fmt_money(total, csym)],
-        ]
-        story.append(_finalize_totals_table(
-            rows, entity, total, csym,
-            extra_style=[("FONTSIZE", (0, -1), (-1, -1), 11)],
-        ))
-
-    else:
-        total = subtotal
-
-    return story, total
+    return build_layout(entity, subtotal, tax_amount, total, csym)
 
 
 def _bank_details_block(entity, sty):
@@ -506,17 +482,16 @@ def _bank_details_block(entity, sty):
 
 def _queries_line_html(query_line):
     """'accountsint@indusnet.co.in | +91-33-2357 6070' -> the email segment
-    bold + blue (matches the real invoices' link styling), '|' kept plain,
-    the rest bold. Works fine for a query_line with no '|' too (Poland)."""
+    bold + blue, '|' kept plain, the rest bold. Also works with no '|'
+    (Poland's query_line has none)."""
     parts = [p.strip() for p in query_line.split("|")]
     styled = [f'<font color="#1961ac"><b>{p}</b></font>' if "@" in p else f"<b>{p}</b>" for p in parts]
     return "QUERIES : " + " | ".join(styled)
 
 
 def _header_block(entity, sty):
-    """Logo top-left, title + QUERIES line top-right — matches every real
-    invoice seen so far (UK/Singapore/Poland). No legal name is shown up
-    here at all in the real ones; it only appears in the footer."""
+    """Logo top-left, title + QUERIES line top-right. No legal name here —
+    that's footer-only."""
     title_style = ParagraphStyle(
         "IntlTitleReal", parent=sty["styles"]["Normal"], fontName="Helvetica",
         fontSize=24, leading=28, textColor=colors.HexColor("#333333"), alignment=2,  # 2 = right
@@ -535,49 +510,76 @@ def _header_block(entity, sty):
     return header
 
 
+def _footer_block(entity, sty):
+    """Legal name + address + registration numbers only — none of the real
+    invoices repeat the QUERIES line down here, that's header-only."""
+    footer_lines = [entity["legal_name"]] + entity.get("footer_address_lines", [])
+    reg_bits = []
+    if entity.get("registration_no"):
+        reg_bits.append(f"{entity.get('registration_label', 'CIN')}: {entity['registration_no']}")
+    if entity.get("vat_no"):
+        reg_bits.append(f"{entity.get('vat_label', 'VAT NO')}: {entity['vat_no']}")
+    if entity.get("nip_no"):
+        reg_bits.append(f"{entity.get('nip_label', 'NIP NO')}: {entity['nip_no']}")
+    if entity.get("gstin"):
+        reg_bits.append(f"{entity.get('gstin_label', 'GSTIN')}: {entity['gstin']}")
+    if entity.get("pan"):
+        reg_bits.append(f"{entity.get('pan_label', 'PAN')}: {entity['pan']}")
+    if reg_bits:
+        footer_lines.append(" | ".join(reg_bits))
+
+    story = [HRFlowable(width="100%", color=colors.HexColor("#cccccc"), thickness=0.5), Spacer(1, 2 * mm)]
+    for line in footer_lines:
+        story.append(Paragraph(line, sty["small_center"]))
+    return story
+
+
+def _resolve_currency(entity, row):
+    """The row's own currency (as saved in its Excel/Sheet Currency column)
+    always wins over the entity's static default — an invoice must show
+    whatever currency was actually billed. Returns (currency_code, symbol)."""
+    row_currency = (row.get("currency") or "").strip().upper()
+    if row_currency and row_currency in CURRENCY_SYMBOLS:
+        return row_currency, CURRENCY_SYMBOLS[row_currency]
+    if row_currency:
+        # A currency code we don't have a symbol for -- show the code
+        # itself rather than silently falling back to an unrelated default.
+        return row_currency, row_currency + " "
+    return entity.get("currency", ""), entity.get("currency_symbol", "")
+
+
+def _payment_intro_line(entity):
+    default_intro = ("Please make the payment by PayPal or Bank Transfer, the details are given below:"
+                      if (entity.get("payment_options") or {}).get("paypal")
+                      else "Please make the payment with the following details :")
+    return entity.get("payment_intro_line", default_intro)
+
+
 def render_international_invoice(entity_key, row, out_path):
     """
-    entity_key: "usa" | "uk" | "singapore" | "poland"
+    entity_key: "usa" | "uk" | "poland" | "singapore"
     row: {
         "invoice_no": str, "invoice_date": str, "due_date": str (optional),
         "po_no": str (Poland only), "po_date": str (Poland only),
         "client_name": str, "client_address_lines": [str, ...],
-        "month_label": str, e.g. "Aug'26" (used when the entity's table
-            shows a "For the month of ..." sub-header),
+        "month_label": str, e.g. "Aug'26" (shown when the entity's table
+            has a "For the month of ..." sub-header),
         # USA (table_mode = "per_resource"):
         "line_items": [{"label": "Goutam Barai (PM)", "amount": 2240.0}, ...],
-        # UK / Singapore / Poland (table_mode = "single_line"):
+        # UK / Poland / Singapore (table_mode = "single_line"):
         "description": str (can be multi-line, use "\\n" for line breaks),
         "subtotal": number (optional — computed from line_items/description
             amount if omitted),
-        "currency": str, optional -- a standard 3-letter code (e.g. "USD",
-            "INR") as saved in the row's Excel Currency column. When
-            present, this OVERRIDES the entity's static default currency/
-            symbol for this one invoice (see CURRENCY_SYMBOLS above) --
-            added 2026-08-13 because the entity's default alone can't
-            reflect a CP asking for a different billing currency on a
-            given invoice. Falls back to the entity's own default currency
-            if omitted or not in CURRENCY_SYMBOLS.
+        "currency": str, optional -- a 3-letter code (e.g. "USD", "INR") as
+            saved in the row's Currency column. Overrides the entity's
+            static default currency/symbol for this one invoice when
+            present (see _resolve_currency above).
     }
     out_path: str/Path to write the PDF to
     """
     entity = load_entity_config(entity_key)
     sty = _styles()
-    row_currency = (row.get("currency") or "").strip().upper()
-    if row_currency and row_currency in CURRENCY_SYMBOLS:
-        currency_code = row_currency
-        currency_symbol = CURRENCY_SYMBOLS[row_currency]
-    elif row_currency:
-        # Recognized-as-present but not in our symbol table (e.g. a code
-        # CURRENCY_ALIASES doesn't know about either) -- show the code
-        # itself rather than silently falling back to the entity's
-        # unrelated default, since that would misrepresent what was
-        # actually billed.
-        currency_code = row_currency
-        currency_symbol = row_currency + " "
-    else:
-        currency_code = entity.get("currency", "")
-        currency_symbol = entity.get("currency_symbol", "")
+    currency_code, currency_symbol = _resolve_currency(entity, row)
 
     doc = SimpleDocTemplate(
         str(out_path), pagesize=A4,
@@ -597,19 +599,18 @@ def render_international_invoice(entity_key, row, out_path):
         story.append(Spacer(1, 2 * mm))
 
     if entity["table_mode"] == "per_resource":
-        table, subtotal = _line_items_table_per_resource(entity, row, sty, currency_symbol)
+        line_items_table, subtotal = _line_items_table_per_resource(entity, row, sty, currency_symbol)
     else:
-        table, subtotal = _line_items_table_single_line(entity, row, sty, currency_symbol)
-    story.append(table)
+        line_items_table, subtotal = _line_items_table_single_line(entity, row, sty, currency_symbol)
+    story.append(line_items_table)
     story.append(Spacer(1, 2 * mm))
 
     totals_story, total = _totals_block(entity, row, sty, subtotal, currency_symbol)
     story.extend(totals_story)
 
-    # USA/Poland/India use "amount_in_words"; Poland's (and India's, if
-    # configured that way) version is already merged into the totals table
-    # above as its final row's label — a separate line here is only needed
-    # when it ISN'T replacing that label, e.g. USA.
+    # An entity's amount-in-words line is either merged into the totals
+    # table above as its final row (e.g. Poland), or -- when it ISN'T
+    # replacing that label (e.g. USA) -- added here as its own line.
     if entity.get("amount_in_words") and not entity.get("amount_in_words_replaces_total_label"):
         words_system = entity.get("amount_in_words_system", "western")
         story.append(Spacer(1, 2 * mm))
@@ -617,14 +618,7 @@ def render_international_invoice(entity_key, row, out_path):
                                 sty["normal"]))
 
     story.append(Spacer(1, 8 * mm))
-
-    default_intro = ("Please make the payment by PayPal or Bank Transfer, the details are given below:"
-                      if (entity.get("payment_options") or {}).get("paypal")
-                      else "Please make the payment with the following details :")
-    intro_line = entity.get("payment_intro_line", default_intro)
-    story.append(Paragraph(intro_line, ParagraphStyle(
-        "PaymentIntro", parent=sty["normal"], fontSize=9,
-    )))
+    story.append(Paragraph(_payment_intro_line(entity), ParagraphStyle("PaymentIntro", parent=sty["normal"], fontSize=9)))
     story.append(Spacer(1, 2 * mm))
     story.extend(_bank_details_block(entity, sty))
     story.append(Spacer(1, 4 * mm))
@@ -638,27 +632,7 @@ def render_international_invoice(entity_key, row, out_path):
     )))
     story.append(Spacer(1, 10 * mm))
 
-    # Legal name + address + registration numbers ONLY — none of the real
-    # invoices repeat the QUERIES line down here, it's a header-only thing.
-    footer_lines = [entity["legal_name"]] + entity.get("footer_address_lines", [])
-    reg_bits = []
-    if entity.get("registration_no"):
-        reg_bits.append(f"{entity.get('registration_label', 'CIN')}: {entity['registration_no']}")
-    if entity.get("vat_no"):
-        reg_bits.append(f"{entity.get('vat_label', 'VAT NO')}: {entity['vat_no']}")
-    if entity.get("nip_no"):
-        reg_bits.append(f"{entity.get('nip_label', 'NIP NO')}: {entity['nip_no']}")
-    if entity.get("gstin"):
-        reg_bits.append(f"{entity.get('gstin_label', 'GSTIN')}: {entity['gstin']}")
-    if entity.get("pan"):
-        reg_bits.append(f"{entity.get('pan_label', 'PAN')}: {entity['pan']}")
-    if reg_bits:
-        footer_lines.append(" | ".join(reg_bits))
-
-    story.append(HRFlowable(width="100%", color=colors.HexColor("#cccccc"), thickness=0.5))
-    story.append(Spacer(1, 2 * mm))
-    for line in footer_lines:
-        story.append(Paragraph(line, sty["small_center"]))
+    story.extend(_footer_block(entity, sty))
 
     doc.build(story)
     return {"entity": entity_key, "invoice_number": row.get("invoice_no"), "path": str(out_path), "total": total}
