@@ -12,12 +12,14 @@ files) and the untouched PDF renderer in pdf.generate_invoice_pdf_intl.
 """
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
 from pdf.generate_invoice_pdf_intl import render_international_invoice
 from save_api.excel_writer import load_schema
-from utils.xlsx_io import load_workbook_with_retry, TRACKER_LOCK
+from utils.xlsx_io import TRACKER_LOCK
+from utils.tracker_io import load_tracker_with_retry, save_tracker, tracker_ref_from_config
 
 from draft_mailer.email_composer import compose_email
 from draft_mailer.gmail_imap import connect, find_drafts_folder, build_draft_mime, append_draft
@@ -29,6 +31,9 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 # Tabs scanned for rows whose Review Status is "Reviewed".
 REVIEWABLE_ENTITIES = ["usa", "uk", "poland"]
 
+POLL_INTERVAL_ENV = "DRAFT_POLL_INTERVAL_SECONDS"
+DEFAULT_POLL_INTERVAL_SECONDS = 300
+
 logger = logging.getLogger("draft_mailer.poller")
 
 
@@ -37,11 +42,25 @@ def load_config():
         return json.load(f)
 
 
+def poll_interval_seconds():
+    """How often (in seconds) the draft loop scans the tracker, read from
+    the DRAFT_POLL_INTERVAL_SECONDS environment variable. Falls back to
+    DEFAULT_POLL_INTERVAL_SECONDS if unset or not a valid integer. (Same
+    pattern as save_api.excel_writer._payment_due_days().)"""
+    raw = os.environ.get(POLL_INTERVAL_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_POLL_INTERVAL_SECONDS
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return DEFAULT_POLL_INTERVAL_SECONDS
+
+
 def _tracker_path(cfg):
-    path = Path(cfg["tracker_xlsx_path"])
-    if not path.is_absolute():
-        path = (CONFIG_PATH.parent / path).resolve()
-    return path
+    """Despite the name (kept for call-site stability), this returns a
+    `tracker_ref` dict pointing at the live Google Sheet -- see
+    utils.tracker_io.tracker_ref_from_config for the resolution logic."""
+    return tracker_ref_from_config(cfg, CONFIG_PATH.parent)
 
 
 def _is_reviewed(value):
@@ -82,21 +101,21 @@ def _find_row_index_by_invoice_no(ws, schema, invoice_no):
     return None
 
 
-def _scan_pending(tracker_path, entity_key):
+def _scan_pending(tracker_ref, entity_key):
     """Returns (schema, [pending row dicts]) for one entity's tab."""
     with TRACKER_LOCK:
         schema = load_schema(entity_key)
-        wb = load_workbook_with_retry(str(tracker_path))
+        wb = load_tracker_with_retry(tracker_ref)
         ws = wb[schema["sheet_name"]]
         return schema, list(_pending_rows(ws, schema))
 
 
-def mark_drafted(tracker_path, entity_key, invoice_no):
+def mark_drafted(tracker_ref, entity_key, invoice_no):
     """Flips Email Drafted to True for one row by Invoice No. Returns False
     if the row can't be found (draft was still created either way)."""
     with TRACKER_LOCK:
         schema = load_schema(entity_key)
-        wb = load_workbook_with_retry(str(tracker_path))
+        wb = load_tracker_with_retry(tracker_ref)
         ws = wb[schema["sheet_name"]]
 
         row_idx = _find_row_index_by_invoice_no(ws, schema, invoice_no)
@@ -105,7 +124,7 @@ def mark_drafted(tracker_path, entity_key, invoice_no):
 
         col_idx = next(i for i, c in enumerate(schema["columns"]) if c["key"] == "email_drafted") + 1
         ws.cell(row=row_idx, column=col_idx, value=True)
-        wb.save(str(tracker_path))
+        save_tracker(wb, tracker_ref)
         return True
 
 
@@ -117,6 +136,21 @@ def _derive_month_label(description):
         return None
     m = _MONTH_OF_RE.search(description)
     return m.group(1) if m else None
+
+
+def _coerce_amount(value):
+    """The gspread-backed tracker adapter always returns cell values as
+    strings (unlike openpyxl, which preserves numeric types) -- coerce the
+    total amount back to a float here, right before it's handed to the PDF
+    renderer, which sums/multiplies it. A missing or unparseable value
+    becomes 0.0 rather than raising, so a blank cell never crashes
+    drafting."""
+    if value is None or value == "":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _row_to_intl_row(entity_key, row):
@@ -136,14 +170,14 @@ def _row_to_intl_row(entity_key, row):
         "currency": row.get("currency") or None,
     }
     if entity_key == "usa":
-        intl_row["line_items"] = [{"label": description or "Services", "amount": row.get("total")}]
+        intl_row["line_items"] = [{"label": description or "Services", "amount": _coerce_amount(row.get("total"))}]
     else:
         intl_row["description"] = description
-        intl_row["subtotal"] = row.get("total")
+        intl_row["subtotal"] = _coerce_amount(row.get("total"))
     return intl_row
 
 
-def process_row(entity_key, row, imap, from_addr, drafts_folder, tracker_path):
+def process_row(entity_key, row, imap, from_addr, drafts_folder, tracker_ref):
     invoice_no = row.get("invoice_no")
     safe_inv = (invoice_no or "unknown").replace("/", "-")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -161,13 +195,13 @@ def process_row(entity_key, row, imap, from_addr, drafts_folder, tracker_path):
     append_draft(imap, drafts_folder, mime_msg)
     logger.info("Draft created in %s for Invoice No %s", drafts_folder, invoice_no)
 
-    if not mark_drafted(tracker_path, entity_key, invoice_no):
+    if not mark_drafted(tracker_ref, entity_key, invoice_no):
         logger.warning("Could not find row for %s to flip Email Drafted -- draft was still created", invoice_no)
 
 
 def run_once(cfg):
     """One poll cycle: scan every reviewable tab, draft anything pending."""
-    tracker_path = _tracker_path(cfg)
+    tracker_ref = _tracker_path(cfg)
 
     imap, from_addr = connect(cfg)
     try:
@@ -176,7 +210,7 @@ def run_once(cfg):
 
         for entity_key in REVIEWABLE_ENTITIES:
             try:
-                _schema, pending = _scan_pending(tracker_path, entity_key)
+                _schema, pending = _scan_pending(tracker_ref, entity_key)
             except Exception:
                 logger.exception("FAILED scanning '%s' tab for reviewed rows", entity_key)
                 continue
@@ -187,7 +221,7 @@ def run_once(cfg):
             for row in pending:
                 invoice_no = row.get("invoice_no")
                 try:
-                    process_row(entity_key, row, imap, from_addr, drafts_folder, tracker_path)
+                    process_row(entity_key, row, imap, from_addr, drafts_folder, tracker_ref)
                     drafted_count += 1
                 except Exception:
                     logger.exception("FAILED drafting email for %s (%s)", invoice_no, entity_key)

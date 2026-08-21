@@ -2,8 +2,9 @@
 app.py
 
 The save API: one endpoint that takes an invoice request from the frontend
-and appends it as a new row into the correct tab of the local Excel
-tracker. Nothing else -- no MIS check, no PDF, no email drafting.
+and appends it as a new row into the correct tab of the tracker (a live
+Google Sheet -- see utils/tracker_io.py). Nothing else -- no tax
+calculation, no PDF, no email drafting.
 
     POST /invoice/api/v1/invoice-generation
     GET  /health
@@ -21,7 +22,10 @@ SRC_DIR = Path(__file__).resolve().parent.parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from save_api.excel_writer import save_invoice, UnknownEntityError
+from save_api.excel_writer import (
+    save_invoice, update_mis_verified, UnknownEntityError, RowNotFoundError, PfIdMismatchError,
+)
+from utils.tracker_io import tracker_ref_from_config
 
 PROJECT_ROOT = SRC_DIR.parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "save_api_config.json"
@@ -63,16 +67,23 @@ class InvoiceGenerationRequest(BaseModel):
     entity: str = Field(..., min_length=1)
 
 
+class MisVerificationUpdateRequest(BaseModel):
+    invoiceNo: str = Field(..., min_length=1)
+    entity: str = Field(..., min_length=1)
+    pfId: str = ""
+    misUpdateFlag: bool
+
+
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def tracker_path_from_config(cfg):
-    path = Path(cfg["tracker_xlsx_path"])
-    if not path.is_absolute():
-        path = (CONFIG_PATH.parent / path).resolve()
-    return path
+    """Despite the name (kept for call-site stability), this returns a
+    `tracker_ref` dict pointing at the live Google Sheet -- see
+    utils.tracker_io.tracker_ref_from_config for the resolution logic."""
+    return tracker_ref_from_config(cfg, CONFIG_PATH.parent)
 
 
 def normalize_entity(entity: str) -> str:
@@ -125,9 +136,9 @@ def invoice_generation(request: InvoiceGenerationRequest):
 
     try:
         cfg = load_config()
-        tracker_path = tracker_path_from_config(cfg)
+        tracker_ref = tracker_path_from_config(cfg)
         result = save_invoice(
-            data, entity_key, tracker_path, requested_by=request.clientMailTo,
+            data, entity_key, tracker_ref, requested_by=request.clientMailTo,
         )
     except UnknownEntityError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -152,4 +163,46 @@ def invoice_generation(request: InvoiceGenerationRequest):
         "invoice_value": row.get("total"),
         "currency": row.get("currency"),
         "created_at": row.get("created_at"),
+    }
+
+
+@app.post("/invoice/api/v1/mis-verification")
+def mis_verification_update(request: MisVerificationUpdateRequest):
+    logger.info(
+        "MIS verification update received: invoiceNo=%s, entity=%s, pfId=%s, flag=%s",
+        request.invoiceNo, request.entity, request.pfId, request.misUpdateFlag,
+    )
+
+    entity_key = normalize_entity(request.entity)
+
+    try:
+        cfg = load_config()
+        tracker_ref = tracker_path_from_config(cfg)
+        result = update_mis_verified(
+            entity_key, request.invoiceNo.strip(), request.pfId.strip(), request.misUpdateFlag, tracker_ref,
+        )
+    except UnknownEntityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RowNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PfIdMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("MIS verification update failed for invoiceNo=%s", request.invoiceNo)
+        raise HTTPException(status_code=500, detail=f"MIS verification update failed: {exc}")
+
+    logger.info(
+        "MIS verification updated: %s in '%s' set to %s",
+        result["invoice_no"], result["sheet"], result["mis_verification_done"],
+    )
+
+    return {
+        "success": True,
+        "status": "updated",
+        "entity": entity_key,
+        "sheet": result["sheet"],
+        "invoice_no": result["invoice_no"],
+        "mis_verification_done": result["mis_verification_done"],
     }

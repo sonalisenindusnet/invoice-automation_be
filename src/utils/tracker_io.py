@@ -1,55 +1,36 @@
 """
 tracker_io.py
 
-Added 2026-08-14. Single entry point every read/write in
-append_invoice_to_excel.py (and entity_resolver.py's now-unused-by-live-
-routing resolve_entity_for_company()) goes through to reach the actual
-Invoice Tracker storage.
+Single entry point every read/write in save_api/excel_writer.py and
+draft_mailer/poller.py goes through to reach the actual Invoice Tracker
+storage -- the live Google Sheet (sheet id + service-account credentials
+come from config; see tracker_ref_from_config below). Local-.xlsx support
+has been removed entirely: `tracker_ref` is always the
+{"type": "google_sheets", "sheet_id": ..., "service_account_json": ...}
+dict form now, and load_tracker_with_retry() raises immediately if it's
+handed anything else.
 
-WHY THIS EXISTS: the live tracker was a local "Invoice Traker.xlsx" file,
-opened directly by both a human in Excel and this automation. A local
-.xlsx file cannot support simultaneous write-while-open access from two
-different processes -- that's an OS-level file-lock constraint, not
-something a "check if it's locked first" retry loop can truly eliminate
-(see xlsx_io.py's docstring for the original torn-read issue this ran
-into). Per explicit instruction ("your task is not to check if it is open
-or not... somebody is also working so you dont raise a conflict"), the
-tracker was migrated to a native Google Sheet, which supports true
-concurrent multi-writer access with no file locks at all.
-
-WHAT THIS MODULE DOES: dispatches on the shape of `tracker_ref`:
-  - a dict {"type": "google_sheets", "sheet_id": ..., "service_account_json": ...}
-    -> opens the live Google Sheet via the Sheets API (gspread) and returns
-       a WorkbookHandle that duck-types the small subset of openpyxl's
-       Workbook interface the rest of the codebase actually uses
-       (.sheetnames, wb[name], .create_sheet(name), .save(path)).
-  - a plain string (a local .xlsx file path)
-    -> falls back to the original openpyxl-based load_workbook_with_retry()
-       unchanged. Kept for the manual row-inspection CLI and as an emergency
-       fallback.
-
-This design means NONE of the actual business logic in
-append_invoice_to_excel.py (tax calc, invoice numbering, MIS check, and
-duplicate check) had
-to change -- only this one I/O layer underneath it did.
+WHAT THIS MODULE DOES: opens the live Google Sheet via the Sheets API
+(gspread) and returns a WorkbookHandle that duck-types the small subset of
+openpyxl's Workbook interface the rest of the codebase actually uses
+(.sheetnames, wb[name], .create_sheet(name), .save()) -- so none of the
+actual business logic in excel_writer.py/poller.py (invoice numbering,
+MIS-verify lookup, Created-At stamping, Reviewed-row scanning) needs to
+know it's talking to Sheets rather than a local file.
 
 Google Sheets has no separate "cached formula value" concept the way a
-local .xlsx can (see xlsx_io.py's docstring about India/Kar Ventures/SBI
-Yet to raise) -- it always live-evaluates formulas on read, so `data_only`
-is accepted here for call-site compatibility but has no effect.
+local .xlsx can -- it always live-evaluates formulas on read, so
+`data_only` is accepted here for call-site compatibility but has no effect.
 """
 import logging
 import time
+from pathlib import Path
 
 logger = logging.getLogger("email_server.tracker_io")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 _client_cache = {}
-
-
-def _is_sheet_ref(tracker_ref):
-    return isinstance(tracker_ref, dict) and tracker_ref.get("type") == "google_sheets"
 
 
 def _get_gspread_client(service_account_json):
@@ -63,17 +44,20 @@ def _get_gspread_client(service_account_json):
 
 
 def load_tracker_with_retry(tracker_ref, data_only=False, retries=4, delay_seconds=1.5):
-    """Same contract as the old load_workbook_with_retry(xlsx_path, data_only=...),
-    except `tracker_ref` may now ALSO be the dict form described in the
-    module docstring, in which case a live Google Sheet is opened instead
-    of a local file. Transient errors (network blips, Sheets API rate
-    limiting -- HTTP 429/5xx) are retried a few times before the original
-    exception is re-raised, same policy as the old xlsx retry wrapper."""
-    if not _is_sheet_ref(tracker_ref):
-        # Plain local file path -- unchanged behavior via the original
-        # openpyxl-based loader.
-        from utils.xlsx_io import load_workbook_with_retry
-        return load_workbook_with_retry(tracker_ref, data_only=data_only, retries=retries, delay_seconds=delay_seconds)
+    """Opens the live Google Sheet described by `tracker_ref`
+    ({"type": "google_sheets", "sheet_id": ..., "service_account_json": ...})
+    and returns a WorkbookHandle. Transient errors (network blips, Sheets
+    API rate limiting -- HTTP 429/5xx) are retried a few times before the
+    original exception is re-raised. `data_only` is accepted for call-site
+    compatibility but has no effect (Sheets always live-evaluates formulas).
+
+    Raises ValueError immediately (no retry) if `tracker_ref` isn't the
+    expected dict shape -- local-.xlsx tracker support has been removed."""
+    if not isinstance(tracker_ref, dict) or tracker_ref.get("type") != "google_sheets":
+        raise ValueError(
+            f"tracker_ref must be a google_sheets dict, got {tracker_ref!r} -- "
+            "local .xlsx tracker support has been removed."
+        )
 
     import gspread
 
@@ -94,6 +78,36 @@ def load_tracker_with_retry(tracker_ref, data_only=False, retries=4, delay_secon
             else:
                 logger.error("  Google Sheets open FAILED after %d attempts: %s", retries, e)
     raise last_err
+
+
+def tracker_ref_from_config(cfg, config_dir):
+    """Resolves a config dict into the `tracker_ref` shape
+    load_tracker_with_retry() expects -- always the google_sheets dict now.
+    Both save_api and draft_mailer resolve their (separately-loaded,
+    deliberately duplicated) configs through this one shared function so
+    the sheet-id/service-account resolution logic never drifts between the
+    two. Raises KeyError with a clear message if the config is missing
+    either required key."""
+    if "google_sheet_id" not in cfg or "google_service_account_json" not in cfg:
+        raise KeyError(
+            "Config is missing 'google_sheet_id' and/or 'google_service_account_json' -- "
+            "the tracker is always the live Google Sheet now, local .xlsx support has been removed."
+        )
+    sa_path = Path(cfg["google_service_account_json"])
+    if not sa_path.is_absolute():
+        sa_path = (config_dir / sa_path).resolve()
+    return {
+        "type": "google_sheets",
+        "sheet_id": cfg["google_sheet_id"],
+        "service_account_json": str(sa_path),
+    }
+
+
+def save_tracker(wb, tracker_ref):
+    """Flushes every pending write on `wb` to the live Sheet. `tracker_ref`
+    isn't actually needed by WorkbookHandle.save() (which takes no
+    arguments), but is accepted here for call-site symmetry."""
+    wb.save()
 
 
 class _CellRef:
@@ -140,6 +154,13 @@ class WorksheetHandle:
         vals = self._load()
         pending_max = max((r for (r, _c) in self._pending), default=0)
         return max(len(vals), pending_max)
+
+    @property
+    def max_column(self):
+        vals = self._load()
+        existing_max = max((len(row) for row in vals), default=0)
+        pending_max = max((c for (_r, c) in self._pending), default=0)
+        return max(existing_max, pending_max)
 
     def _row_width(self, row):
         vals = self._load()
