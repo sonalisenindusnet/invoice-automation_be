@@ -267,6 +267,7 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date, ta
         "email_drafted": False,
         "mis_verification_done": False,
         "country": data.get("client_country") or "",
+        "invoice_advice_by": data.get("invoice_advised_by") or "",
     }
     if any(c["key"] == TAX_AMOUNT_COLUMN_KEY for c in schema["columns"]):
         values[TAX_AMOUNT_COLUMN_KEY] = tax_result["tax_amount"]

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 SRC_DIR = Path(__file__).resolve().parent.parent
 if str(SRC_DIR) not in sys.path:
@@ -48,6 +48,28 @@ app.add_middleware(
 
 SUPPORTED_ENTITIES = {"usa", "uk", "poland", "singapore"}
 
+# Frontend forms commonly send an explicit JSON `null` for an empty optional
+# field instead of omitting the key. Plain `str` fields reject `null`
+# outright with a 422 validation error (confirmed via a direct test:
+# sending raisedByEmail=null on its own crashed the whole request, not just
+# that field) -- so every genuinely-optional, blank-string-default field on
+# InvoiceGenerationRequest is normalized from `null` to `""` before
+# Pydantic's own type validation runs (see that model's `_null_optional_
+# strings_to_empty` validator). Deliberately excludes the required fields
+# (pfId, clientName, invoiceValue, entity) and `currency` (whose real
+# default is "USD", not "") -- a `null` for any of those should keep
+# failing loudly rather than being silently papered over. Module-level (not
+# a class attribute) because Pydantic v2 treats an underscore-prefixed
+# CLASS attribute as a private model field slot, not a plain constant --
+# confirmed the hard way (`TypeError: 'ModelPrivateAttr' object is not
+# iterable`) before moving it here.
+NULLABLE_TO_EMPTY_FIELDS = (
+    "accountName", "invoiceDescription", "contactPersonName", "clientMailTo",
+    "clientMailCc", "intCcMailId", "workOrder", "masterProjectId",
+    "company_location", "companyLocation", "projectValue", "invoiceType",
+    "raisedByEmail",
+)
+
 
 class InvoiceGenerationRequest(BaseModel):
     pfId: str = Field(..., min_length=1)
@@ -78,7 +100,23 @@ class InvoiceGenerationRequest(BaseModel):
     invoiceValue: str = Field(..., min_length=1)
     invoiceType: str = ""
     entity: str = Field(..., min_length=1)
-    raisedByEmail: str =""
+    # Who actually raised/requested this invoice internally -- distinct from
+    # clientMailTo (the CLIENT's email, used for recipient/that column).
+    # Written into the tracker's "Invoice Advised By" column (key
+    # "requested_by"). Previously that column was populated from
+    # clientMailTo as a placeholder; this is the real source now that the
+    # frontend sends it.
+    raisedByEmail: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_optional_strings_to_empty(cls, data):
+        """See NULLABLE_TO_EMPTY_FIELDS above for why this exists."""
+        if isinstance(data, dict):
+            for key in NULLABLE_TO_EMPTY_FIELDS:
+                if key in data and data[key] is None:
+                    data[key] = ""
+        return data
 
 
 class MisVerificationUpdateRequest(BaseModel):
@@ -144,9 +182,6 @@ def health_check():
 
 @app.post("/invoice/api/v1/invoice-generation")
 def invoice_generation(request: InvoiceGenerationRequest):
-    logger.info("========== RECEIVED REQUEST ==========")
-    logger.info("Request data: %s", request.model_dump())
-    logger.info("======================================")
     logger.info(
         "Invoice save request received: PF ID=%s, entity=%s, company_location=%r",
         request.pfId, request.entity, request.company_location,
@@ -172,7 +207,7 @@ def invoice_generation(request: InvoiceGenerationRequest):
         cfg = load_config()
         tracker_ref = tracker_path_from_config(cfg)
         result = save_invoice(
-            data, entity_key, tracker_ref, requested_by=request.clientMailTo,
+            data, entity_key, tracker_ref, requested_by=request.raisedByEmail,
         )
     except UnknownEntityError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

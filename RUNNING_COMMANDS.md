@@ -108,11 +108,20 @@ curl -X POST http://localhost:5000/invoice/api/v1/invoice-generation \
         "clientMailTo": "jane@example.com",
         "intCcMailId": "accounts@intglobal.com",
         "companyLocation": "United States",
+        "raisedByEmail": "atanub@intglobal.com",
         "currency": "USD",
         "invoiceValue": "1000",
         "entity": "usa"
       }'
 ```
+
+`raisedByEmail` is who internally raised/requested the invoice (added
+2026-08-24) — stored in the tracker's own **"Invoice Advised By"** column
+(`requested_by`). Distinct from `clientMailTo`, which is the CLIENT's
+email address (used for the "Client Mail To" column and, later, as the
+drafted email's recipient) — the two used to be conflated (that column was
+populated from `clientMailTo` as a placeholder before this field existed).
+Optional — an empty/missing value just leaves that column blank.
 
 The client's own country/location field. **Either spelling is accepted**:
 `companyLocation` (camelCase, matching this request's other fields) or

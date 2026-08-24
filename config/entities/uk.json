@@ -11,7 +11,7 @@
   "currency": "GBP",
   "currency_symbol": "£",
   "table_mode": "single_line",
-  "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT(£)"],
+  "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT(EURO: £)"],
   "totals_show_currency_symbol": false,
   "date_month_format": "full",
   "date_year_digits": 4,
@@ -25,7 +25,7 @@
     "position": "after_subtotal",
     "show_final_total_label": false
   },
-  "amount_in_words": false,
+  "amount_in_words": true,
   "invoice_number_prefix": "INT/UK",
   "financial_year_format": "26-27",
   "due_days": 7,

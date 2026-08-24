@@ -9,7 +9,7 @@
   "currency": "USD",
   "currency_symbol": "$",
   "table_mode": "per_resource",
-  "table_columns": ["S/N", "Resource Names", "AMOUNT($)"],
+  "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT(USD: $)"],
   "show_month_subheader": true,
   "subtotal_label": "Sub-Total",
   "monthly_billing_label": "Total Monthly Billing",

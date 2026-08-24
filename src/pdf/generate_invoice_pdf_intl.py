@@ -40,16 +40,19 @@ CURRENCY_SYMBOLS = {
     "USD": "$", "GBP": "£", "INR": "Rs.", "EUR": "€", "PLN": "PLN", "SGD": "S$",
 }
 
-# config/entities/*.json's "table_columns" bakes a default currency symbol
-# into the amount column header text itself (e.g. "AMOUNT($)"). This
-# rewrites whatever's inside the parens to match the invoice's actual
-# resolved currency_symbol, so the header never disagrees with the totals.
+# config/entities/*.json's "table_columns" bakes a default amount-column
+# header (e.g. "AMOUNT($)" or "AMOUNT(USD)") into config. This rewrites
+# whatever's inside the parens to the invoice's actual resolved currency
+# CODE (e.g. "AMOUNT(USD)"/"AMOUNT(GBP)"/"AMOUNT(SGD)") -- per explicit
+# instruction, the 3-letter code, not just a symbol, so the currency is
+# named unambiguously on every invoice regardless of which entity/row
+# currency it ends up being.
 _AMOUNT_HEADER_RE = re.compile(r"^(AMOUNT)\(.*\)$", re.IGNORECASE)
 
 
-def _localize_column_headers(cols, currency_symbol):
-    sym = currency_symbol.strip()
-    return [_AMOUNT_HEADER_RE.sub(lambda m: f"{m.group(1)}({sym})", c) for c in cols]
+def _localize_column_headers(cols, currency_code):
+    code = currency_code.strip()
+    return [_AMOUNT_HEADER_RE.sub(lambda m: f"{m.group(1)}({code})", c) for c in cols]
 
 _ONES = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
          "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
@@ -250,8 +253,12 @@ def _bill_to_and_meta_table(entity, row, sty):
             meta_lines.append(f"PO Dt. {row['po_date']}")
     if entity.get("gst_reg_no"):
         meta_lines.append(f"{entity.get('gst_reg_label', 'GST Reg No')}: {entity['gst_reg_no']}")
-    if entity.get("vat_no") and entity["entity_key"] == "uk":
-        meta_lines.append(f"{entity.get('vat_label', 'VAT NO')}: {entity['vat_no']}")
+    # VAT registration number ("VAT NO") intentionally NOT rendered here (or
+    # in the footer -- see _footer_block below), per explicit instruction.
+    # NOTE: this is the entity's registered VAT NUMBER (e.g. "987 5092 65"),
+    # a different thing from the VAT/GST TAX AMOUNT line in the totals
+    # block below ("Vat 20%: ..."), which is untouched and still shows the
+    # actual tax charged on this invoice.
 
     # India-specific fields, not used by any currently-live entity.
     if entity.get("show_client_gst_fields"):
@@ -267,11 +274,11 @@ def _bill_to_and_meta_table(entity, row, sty):
     return t
 
 
-def _line_items_table_per_resource(entity, row, sty, currency_symbol):
+def _line_items_table_per_resource(entity, row, sty, currency_code):
     """USA-style: one row per resource, a bold monthly-billing subtotal row,
     then a Sub-Total row (the real invoice repeats the same figure on both
     rows on purpose)."""
-    cols = _localize_column_headers(entity["table_columns"], currency_symbol)
+    cols = _localize_column_headers(entity["table_columns"], currency_code)
     normal = sty["normal"]
     header_row = [Paragraph(f"<b>{c}</b>", ParagraphStyle(
         "HeadWhite2", parent=normal, textColor=colors.white, fontSize=9
@@ -303,10 +310,10 @@ def _line_items_table_per_resource(entity, row, sty, currency_symbol):
     return table, subtotal
 
 
-def _line_items_table_single_line(entity, row, sty, currency_symbol):
+def _line_items_table_single_line(entity, row, sty, currency_code):
     """UK/Poland/Singapore/India-style: one row, a (often multi-line)
     description, one total amount."""
-    cols = _localize_column_headers(entity["table_columns"], currency_symbol)
+    cols = _localize_column_headers(entity["table_columns"], currency_code)
     normal = sty["normal"]
     description = row.get("description") or (row.get("line_items") or [{}])[0].get("label", "")
     description_html = description.replace("\n", "<br/>")
@@ -537,8 +544,8 @@ def _footer_block(entity, sty):
     reg_bits = []
     if entity.get("registration_no"):
         reg_bits.append(f"{entity.get('registration_label', 'CIN')}: {entity['registration_no']}")
-    if entity.get("vat_no"):
-        reg_bits.append(f"{entity.get('vat_label', 'VAT NO')}: {entity['vat_no']}")
+    # VAT NO intentionally not rendered here either -- see the matching
+    # note in _bill_to_and_meta_table above.
     if entity.get("nip_no"):
         reg_bits.append(f"{entity.get('nip_label', 'NIP NO')}: {entity['nip_no']}")
     if entity.get("gstin"):
@@ -619,9 +626,9 @@ def render_international_invoice(entity_key, row, out_path):
         story.append(Spacer(1, 2 * mm))
 
     if entity["table_mode"] == "per_resource":
-        line_items_table, subtotal = _line_items_table_per_resource(entity, row, sty, currency_symbol)
+        line_items_table, subtotal = _line_items_table_per_resource(entity, row, sty, currency_code)
     else:
-        line_items_table, subtotal = _line_items_table_single_line(entity, row, sty, currency_symbol)
+        line_items_table, subtotal = _line_items_table_single_line(entity, row, sty, currency_code)
     story.append(line_items_table)
     story.append(Spacer(1, 2 * mm))
 

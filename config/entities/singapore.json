@@ -1,5 +1,5 @@
 {
-  "entity_key": "poland",
+  "entity_key": "singapore",
   "legal_name": "INDUS NET TECHNOLOGIES sp z o o",
   "title": "Invoice",
   "footer_address_lines": ["BARTYCKA 22B M21A", "00-716 WARSZAWA"],
@@ -11,13 +11,13 @@
   "currency": "USD",
   "currency_symbol": "$",
   "table_mode": "single_line",
-  "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT(USD: $)"],
+  "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT()"],
   "show_month_subheader": true,
   "show_po_fields": true,
   "tax": {
     "type": "vat",
     "rate": 0.0,
-    "label": "Add : VAT 0%",
+    "label": "Add : GST 0%",
     "position": "before_subtotal",
     "subtotal_label": "Sub-Total"
   },
