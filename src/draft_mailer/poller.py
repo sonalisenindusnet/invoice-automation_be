@@ -29,7 +29,7 @@ CONFIG_PATH = PROJECT_ROOT / "config" / "draft_poller_config.json"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
 # Tabs scanned for rows whose Review Status is "Reviewed".
-REVIEWABLE_ENTITIES = ["usa", "uk", "poland"]
+REVIEWABLE_ENTITIES = ["usa", "uk", "poland", "singapore"]
 
 POLL_INTERVAL_ENV = "DRAFT_POLL_INTERVAL_SECONDS"
 DEFAULT_POLL_INTERVAL_SECONDS = 300
@@ -73,6 +73,12 @@ def _is_drafted(value):
     return str(value or "").strip().lower() in ("true", "1", "yes")
 
 
+def _is_mis_verified(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("true", "1", "yes")
+
+
 def _iter_rows(ws, schema):
     """Yields {key: value} for each row that actually has data."""
     cols = schema["columns"]
@@ -84,9 +90,14 @@ def _iter_rows(ws, schema):
 
 
 def _pending_rows(ws, schema):
-    """Rows that are Reviewed but not yet drafted."""
+    """Rows that are Reviewed, MIS-verified, and not yet drafted -- all
+    three conditions must hold before a draft is ever created."""
     for row in _iter_rows(ws, schema):
-        if _is_reviewed(row.get("review_status")) and not _is_drafted(row.get("email_drafted")):
+        if (
+            _is_reviewed(row.get("review_status"))
+            and _is_mis_verified(row.get("mis_verification_done"))
+            and not _is_drafted(row.get("email_drafted"))
+        ):
             yield row
 
 

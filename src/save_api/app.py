@@ -46,7 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPPORTED_ENTITIES = {"usa", "uk", "poland"}
+SUPPORTED_ENTITIES = {"usa", "uk", "poland", "singapore"}
 
 
 class InvoiceGenerationRequest(BaseModel):

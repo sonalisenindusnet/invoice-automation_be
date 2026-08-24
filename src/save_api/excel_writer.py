@@ -6,8 +6,8 @@ workbook, in whichever tab the request's "entity" (usa/uk/poland) belongs
 to. Assigns the next invoice number in that tab's own numbering series and
 stamps a "Created At" timestamp. A handful of other columns are also
 auto-filled on every new row (Payment Status, Payment Due Date, Review
-Status -- see build_row()); everything else the tab has a column for is
-left blank.
+Status, Email Drafted, MIS Verified -- see build_row()); everything else
+the tab has a column for is left blank.
 
 Each entity's real tab layout (sheet name, columns, invoice-number series)
 is described in config/tabs/<entity>.json.
@@ -215,13 +215,15 @@ def update_mis_verified(entity_key, invoice_no, pf_id, mis_verified, tracker_ref
 
 def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date):
     """Fields that came in on the request (plus the assigned invoice
-    number) get their value from the request; three more columns are
+    number) get their value from the request; five more columns are
     auto-filled on every new row regardless of what the request contains --
     Payment Status ("Not Paid"), Payment Due Date (`due_date`, computed by
-    the caller as invoice_date + PAYMENT_DUE_DAYS), and Review Status
+    the caller as invoice_date + PAYMENT_DUE_DAYS), Review Status
     ("Pending Review", so the draft-mailer poller never picks up a row
-    until a human changes it to "Reviewed"). Every other column this tab
-    has is left blank."""
+    until a human changes it to "Reviewed"), Email Drafted (False, so the
+    poller doesn't mistake a fresh row for one it already drafted), and
+    MIS Verified (False, until the MIS-verification API flips it). Every
+    other column this tab has is left blank."""
     values = {
         "invoice_date": invoice_date,
         "invoice_no": invoice_no,
@@ -239,6 +241,8 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date):
         "payment_status": PAYMENT_STATUS_DEFAULT,
         "due_date": due_date,
         "review_status": REVIEW_STATUS_DEFAULT,
+        "email_drafted": False,
+        "mis_verification_done": False,
     }
     row_values = [values.get(c["key"], "") for c in schema["columns"]]
     return row_values, values
@@ -249,8 +253,8 @@ def save_invoice(data, entity_key, tracker_ref, requested_by=None):
     tracker at `tracker_ref` (see utils.tracker_io.tracker_ref_from_config),
     assigning the next invoice number in that tab's series, a Created At
     timestamp, and the auto-filled Payment Status/Payment Due Date/Review
-    Status fields (see build_row()). Returns {"sheet": ..., "row": <written
-    field values, as a dict>}."""
+    Status/Email Drafted/MIS Verified fields (see build_row()). Returns
+    {"sheet": ..., "row": <written field values, as a dict>}."""
     with TRACKER_LOCK:
         schema = load_schema(entity_key)
         wb = load_tracker_with_retry(tracker_ref)
