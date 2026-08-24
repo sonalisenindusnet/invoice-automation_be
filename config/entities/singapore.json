@@ -15,9 +15,9 @@
   "show_month_subheader": true,
   "show_po_fields": true,
   "tax": {
-    "type": "vat",
-    "rate": 0.0,
-    "label": "Add : GST 0%",
+    "type": "gst",
+    "rate": 0.09,
+    "label": "Add : GST 9%",
     "position": "before_subtotal",
     "subtotal_label": "Sub-Total"
   },

@@ -251,8 +251,10 @@ def _bill_to_and_meta_table(entity, row, sty):
             meta_lines.append(f"PO No. {row['po_no']}")
         if row.get("po_date"):
             meta_lines.append(f"PO Dt. {row['po_date']}")
-    if entity.get("gst_reg_no"):
+    if entity.get("gst_reg_no") and entity["entity_key"] == "singapore":
         meta_lines.append(f"{entity.get('gst_reg_label', 'GST Reg No')}: {entity['gst_reg_no']}")
+    if entity.get("vat_no") and entity["entity_key"]  in ("uk", "poland"):
+        meta_lines.append(f"{entity.get('vat_label', 'VAT NO')}: {entity['vat_no']}")
     # VAT registration number ("VAT NO") intentionally NOT rendered here (or
     # in the footer -- see _footer_block below), per explicit instruction.
     # NOTE: this is the entity's registered VAT NUMBER (e.g. "987 5092 65"),
