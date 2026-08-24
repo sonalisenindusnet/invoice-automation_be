@@ -1,5 +1,5 @@
 {
-  "entity_key": "singapore",
+  "entity_key": "poland",
   "legal_name": "INDUS NET TECHNOLOGIES sp z o o",
   "title": "Invoice",
   "footer_address_lines": ["BARTYCKA 22B M21A", "00-716 WARSZAWA"],
@@ -14,15 +14,16 @@
   "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT()"],
   "show_month_subheader": true,
   "show_po_fields": true,
+   "subtotal_label": "Sub-Total",
   "tax": {
     "type": "gst",
     "rate": 0.09,
     "label": "Add : GST 9%",
-    "position": "before_subtotal",
+    "label_template": "Add : GST {rate}%",
+    "position": "after_subtotal",
     "subtotal_label": "Sub-Total"
   },
   "amount_in_words": true,
-  "amount_in_words_replaces_total_label": true,
   "invoice_number_prefix": "INT/PL",
   "financial_year_format": "2026",
   "due_days": null,

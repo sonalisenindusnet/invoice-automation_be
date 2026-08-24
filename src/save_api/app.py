@@ -95,7 +95,13 @@ class InvoiceGenerationRequest(BaseModel):
         default="",
         validation_alias=AliasChoices("company_location", "companyLocation"),
     )
-    currency: str = "USD"
+    # Required, no default -- per explicit instruction, a save request that
+    # doesn't specify a currency should fail loudly (422), not be silently
+    # assumed to be USD. This matters most for Singapore (multi-currency:
+    # SGD, USD, EUR, ... depending on the client), but applies to every
+    # entity now -- the frontend must always say which currency an invoice
+    # is actually in.
+    currency: str = Field(..., min_length=1)
     projectValue: str = ""
     invoiceValue: str = Field(..., min_length=1)
     invoiceType: str = ""

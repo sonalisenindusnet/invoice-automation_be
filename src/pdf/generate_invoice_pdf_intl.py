@@ -251,10 +251,8 @@ def _bill_to_and_meta_table(entity, row, sty):
             meta_lines.append(f"PO No. {row['po_no']}")
         if row.get("po_date"):
             meta_lines.append(f"PO Dt. {row['po_date']}")
-    if entity.get("gst_reg_no") and entity["entity_key"] == "singapore":
+    if entity.get("gst_reg_no"):
         meta_lines.append(f"{entity.get('gst_reg_label', 'GST Reg No')}: {entity['gst_reg_no']}")
-    if entity.get("vat_no") and entity["entity_key"]  in ("uk", "poland"):
-        meta_lines.append(f"{entity.get('vat_label', 'VAT NO')}: {entity['vat_no']}")
     # VAT registration number ("VAT NO") intentionally NOT rendered here (or
     # in the footer -- see _footer_block below), per explicit instruction.
     # NOTE: this is the entity's registered VAT NUMBER (e.g. "987 5092 65"),
@@ -355,16 +353,16 @@ def _line_items_table_single_line(entity, row, sty, currency_code):
 
 
 def _finalize_totals_table(rows, entity, total, csym, extra_style=None):
-    """Shared table-building step for every tax layout below. When this
-    entity's amount-in-words is meant to REPLACE the final 'Total' label
-    (e.g. Poland: the last row reads 'Three Thousand $ 3,000.00', not
-    'Total $ 3,000.00'), append it as the actual final row here — not as a
-    separate paragraph after the table — so the bold + line-above styling
-    (which always targets the last row) lands on it."""
-    if entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label"):
-        words_system = entity.get("amount_in_words_system", "western")
-        rows = rows + [[amount_in_words(total, words_system), _fmt_money(total, csym)]]
-
+    """Shared table-building step for every tax layout below. Per explicit
+    instruction, every layout's own final row is now always an explicit
+    "Total" line with the grand total figure -- never blank, never
+    replaced by the amount-in-words text (that used to happen for Poland/
+    Singapore: the last row read "Thirty Thousand  EURO 30,000.00" instead
+    of "Total  EURO 30,000.00", with no "Total" label anywhere on the
+    invoice). The amount-in-words line, where the entity wants one, is a
+    separate paragraph rendered below this table (see
+    render_international_invoice) -- it no longer merges into this table
+    at all, so this function no longer needs to build it."""
     style = [
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
@@ -388,30 +386,45 @@ def _totals_cgst_sgst(entity, subtotal, csym):
         [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(subtotal, csym)],
         [tax_cfg.get("cgst_label", "CGST"), _fmt_money_or_dash(cgst, csym)],
         [tax_cfg.get("sgst_label", "SGST"), _fmt_money_or_dash(sgst, csym)],
+        [tax_cfg.get("total_label", "Total"), _fmt_money(total, csym)],
     ]
-    if not (entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label")):
-        rows.append(["Total", _fmt_money(total, csym)])
     return [_finalize_totals_table(rows, entity, total, csym)], total
 
 
 def _totals_before_subtotal(entity, subtotal, tax_amount, total, csym):
-    """Poland layout: 'Add : VAT x%' line (dash if zero), then Sub-Total."""
+    """Poland/Singapore layout: 'Add : VAT/GST x%' line (dash if zero),
+    then Sub-Total (pre-tax), then an explicit Total row (post-tax).
+
+    BUG FIXED (per explicit instruction: subtotal = pre-tax aggregate,
+    total = subtotal + tax, and the final grand-total figure must always
+    be labeled "Total"): this used to have only two rows -- a "Sub-Total"
+    row that (before an earlier fix) wrongly showed `total`, and no
+    explicit "Total" row at all -- the grand total only ever appeared
+    merged into the amount-in-words line (e.g. "Thirty Thousand  EURO
+    30,000.00"), with no "Total" label anywhere on the invoice. Now always
+    shows a real "Sub-Total" row (pre-tax) AND a real "Total" row
+    (post-tax); the amount-in-words line, if this entity wants one, is a
+    separate paragraph below the table (see render_international_invoice),
+    naming the currency, never a replacement for this row."""
     tax_cfg = entity["tax"]
-    rows = [[tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
-            [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(total, csym)]]
+    rows = [
+        [tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
+        [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(subtotal, csym)],
+        [tax_cfg.get("total_label", "Total"), _fmt_money(total, csym)],
+    ]
     return [_finalize_totals_table(rows, entity, total, csym)], total
 
 
 def _totals_after_subtotal(entity, subtotal, tax_amount, total, csym):
-    """UK layout: explicit Sub-Total row, then 'Vat x%', then a final
-    unlabelled total row (unless amount-in-words replaces it)."""
+    """UK layout: explicit Sub-Total row, then 'Vat x%', then an explicit
+    Total row (previously blank-labeled -- fixed per the same "Total must
+    always be mentioned" instruction as _totals_before_subtotal above)."""
     tax_cfg = entity["tax"]
     rows = [
         [tax_cfg.get("subtotal_label", "Sub-Total"), _fmt_money(subtotal, csym)],
         [tax_cfg["label"], _fmt_money_or_dash(tax_amount, csym)],
+        [tax_cfg.get("total_label", "Total"), _fmt_money(total, csym)],
     ]
-    if not (entity.get("amount_in_words") and entity.get("amount_in_words_replaces_total_label")):
-        rows.append(["", _fmt_money(total, csym)])
     return [_finalize_totals_table(rows, entity, total, csym)], total
 
 
@@ -637,10 +650,10 @@ def render_international_invoice(entity_key, row, out_path):
     totals_story, total = _totals_block(entity, row, sty, subtotal, currency_symbol)
     story.extend(totals_story)
 
-    # An entity's amount-in-words line is either merged into the totals
-    # table above as its final row (e.g. Poland), or -- when it ISN'T
-    # replacing that label (e.g. USA) -- added here as its own line.
-    if entity.get("amount_in_words") and not entity.get("amount_in_words_replaces_total_label"):
+    # The amount-in-words line (naming the currency) always renders as its
+    # own line below the totals table, never merged into/replacing the
+    # table's own "Total" row -- see _finalize_totals_table's docstring.
+    if entity.get("amount_in_words"):
         words_system = entity.get("amount_in_words_system", "western")
         story.append(Spacer(1, 2 * mm))
         story.append(Paragraph(f"<i>Amount in words: {amount_in_words(total, words_system)} {currency_code}</i>",
