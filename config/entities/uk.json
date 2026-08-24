@@ -21,6 +21,7 @@
     "type": "vat",
     "rate": 0.20,
     "label": "Vat 20%",
+    "label_template": "Vat {rate}%",
     "position": "after_subtotal",
     "show_final_total_label": false
   },

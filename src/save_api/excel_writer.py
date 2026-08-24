@@ -39,11 +39,19 @@ from pathlib import Path
 
 from utils.xlsx_io import TRACKER_LOCK
 from utils.tracker_io import load_tracker_with_retry, save_tracker
+from tax.tax_calculator import compute_tax
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TABS_DIR = PROJECT_ROOT / "config" / "tabs"
 
 CREATED_AT_HEADER = "Created At"
+
+# The column key a tab uses for its tax-amount column, where it has one
+# (UK/Poland today -- see config/tabs/*.json's "VAT (GBP)" header). Reused
+# as-is for any future tab's tax column (e.g. Singapore's GST, once that
+# tab gets one) rather than a per-entity key name, so build_row() doesn't
+# need to know which entity it's building a row for.
+TAX_AMOUNT_COLUMN_KEY = "vat"
 
 # Auto-filled on every new row -- not derived from the request payload.
 PAYMENT_STATUS_DEFAULT = "Not Paid"
@@ -213,17 +221,32 @@ def update_mis_verified(entity_key, invoice_no, pf_id, mis_verified, tracker_ref
     }
 
 
-def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date):
+def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date, tax_result):
     """Fields that came in on the request (plus the assigned invoice
-    number) get their value from the request; five more columns are
+    number) get their value from the request; six more columns are
     auto-filled on every new row regardless of what the request contains --
     Payment Status ("Not Paid"), Payment Due Date (`due_date`, computed by
     the caller as invoice_date + PAYMENT_DUE_DAYS), Review Status
     ("Pending Review", so the draft-mailer poller never picks up a row
     until a human changes it to "Reviewed"), Email Drafted (False, so the
-    poller doesn't mistake a fresh row for one it already drafted), and
-    MIS Verified (False, until the MIS-verification API flips it). Every
-    other column this tab has is left blank."""
+    poller doesn't mistake a fresh row for one it already drafted), MIS
+    Verified (False, until the MIS-verification API flips it), and Country
+    (the client's own country, from the request's "client_country" -- only
+    written for tabs that actually have a Country/State column; this is
+    what tax.tax_calculator.compute_tax() reads later to decide whether
+    the LOCAL or FOREIGN tax rate applies).
+
+    "total" is the POST-tax grand total (`tax_result["total"]`), matching
+    the tracker's own column semantics -- Poland's real column header is
+    literally "Total Amount (Including VAT)", and UK's historical rows
+    follow the same convention. Where the tab has its own tax-amount
+    column (see TAX_AMOUNT_COLUMN_KEY -- UK/Poland today), that column
+    gets `tax_result["tax_amount"]`; a tab with no such column (USA, and
+    Singapore until it gets a GST column) simply has no tax value stored,
+    same as before -- consistent with its tax always being 0 anyway.
+    `tax_result` is `tax.tax_calculator.compute_tax()`'s output, computed
+    by the caller from the REQUEST's raw pre-tax amount (never from an
+    already-built row). Every other column this tab has is left blank."""
     values = {
         "invoice_date": invoice_date,
         "invoice_no": invoice_no,
@@ -235,7 +258,7 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date):
         "pf_id": data.get("pf_id") or "",
         "master_project_id": data.get("master_project_id") or "",
         "currency": data.get("currency") or "",
-        "total": (data.get("invoice_value") or {}).get("amount"),
+        "total": tax_result["total"],
         "client_mail_to": ", ".join(data.get("client_mail_to") or []),
         "int_cc_mail": ", ".join(data.get("int_cc_mail") or []),
         "payment_status": PAYMENT_STATUS_DEFAULT,
@@ -243,7 +266,10 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date):
         "review_status": REVIEW_STATUS_DEFAULT,
         "email_drafted": False,
         "mis_verification_done": False,
+        "country": data.get("client_country") or "",
     }
+    if any(c["key"] == TAX_AMOUNT_COLUMN_KEY for c in schema["columns"]):
+        values[TAX_AMOUNT_COLUMN_KEY] = tax_result["tax_amount"]
     row_values = [values.get(c["key"], "") for c in schema["columns"]]
     return row_values, values
 
@@ -253,8 +279,26 @@ def save_invoice(data, entity_key, tracker_ref, requested_by=None):
     tracker at `tracker_ref` (see utils.tracker_io.tracker_ref_from_config),
     assigning the next invoice number in that tab's series, a Created At
     timestamp, and the auto-filled Payment Status/Payment Due Date/Review
-    Status/Email Drafted/MIS Verified fields (see build_row()). Returns
-    {"sheet": ..., "row": <written field values, as a dict>}."""
+    Status/Email Drafted/MIS Verified/Country fields (see build_row()).
+
+    Computes this invoice's tax breakdown (tax.tax_calculator.compute_tax())
+    from the entity, the request's client_country, and the REQUEST's raw
+    pre-tax invoice amount -- BEFORE building the row, since the row's own
+    "Total Amount" column is then set to the resulting POST-tax total (see
+    build_row()) and its tax-amount column (where the tab has one) to the
+    resulting tax_amount. This is the only place tax is ever computed from
+    a fresh rate lookup; once saved, the draft-mailer poller reconstructs
+    the same breakdown from what was actually saved (see
+    tax.tax_calculator.tax_result_from_stored()) rather than recomputing
+    it, so a PDF/email drafted days later can't disagree with what's
+    already sitting in the sheet even if the env-var rate changes meanwhile.
+
+    Returns {"sheet": ..., "row": <written field values, as a dict>,
+    "tax": <compute_tax()'s result>}."""
+    raw_subtotal = (data.get("invoice_value") or {}).get("amount")
+    client_country = data.get("client_country") or ""
+    tax_result = compute_tax(entity_key, client_country, raw_subtotal)
+
     with TRACKER_LOCK:
         schema = load_schema(entity_key)
         wb = load_tracker_with_retry(tracker_ref)
@@ -266,7 +310,9 @@ def save_invoice(data, entity_key, tracker_ref, requested_by=None):
         due_date = (date.today() + timedelta(days=_payment_due_days())).isoformat()
         created_at = datetime.now().isoformat(timespec="seconds")
 
-        row_values, row_dict = build_row(data, schema, invoice_no, invoice_date, requested_by, due_date)
+        row_values, row_dict = build_row(
+            data, schema, invoice_no, invoice_date, requested_by, due_date, tax_result,
+        )
         row_dict["created_at"] = created_at
 
         target_row = _next_data_row(ws, schema)
@@ -278,4 +324,4 @@ def save_invoice(data, entity_key, tracker_ref, requested_by=None):
 
         save_tracker(wb, tracker_ref)
 
-    return {"sheet": schema["sheet_name"], "row": row_dict}
+    return {"sheet": schema["sheet_name"], "row": row_dict, "tax": tax_result}

@@ -428,7 +428,18 @@ def _totals_block(entity, row, sty, subtotal, currency_symbol):
 
     Whether a currency symbol appears inline on these rows (vs. only in the
     "AMOUNT(...)" column header) varies by entity — controlled by
-    entity["totals_show_currency_symbol"] (default True)."""
+    entity["totals_show_currency_symbol"] (default True).
+
+    A per-invoice dynamic tax (row["tax"], set by draft_mailer/poller.py
+    via tax.tax_calculator.compute_tax() for entities whose real tax rate
+    depends on the CLIENT's own country, not just the entity — currently
+    UK and Singapore only) overrides this entity's static rate for this
+    one invoice; the label is rebuilt from entity["tax"]["label_template"]
+    (e.g. "Vat {rate}%") so it always matches the rate actually charged,
+    never the fixed wording of a client who happened to get a different
+    rate. Poland and USA never carry row["tax"], and any direct/test call
+    that doesn't set it, so both keep behaving exactly as they always
+    have — their static config/entities/*.json rate+label."""
     tax_cfg = entity.get("tax")
     csym = currency_symbol if entity.get("totals_show_currency_symbol", True) else ""
 
@@ -440,7 +451,16 @@ def _totals_block(entity, row, sty, subtotal, currency_symbol):
     if tax_cfg["position"] == "cgst_sgst_after_subtotal":
         return _totals_cgst_sgst(entity, subtotal, csym)
 
-    tax_amount = round(subtotal * tax_cfg["rate"], 2)
+    dynamic_tax = row.get("tax")
+    if dynamic_tax is not None:
+        rate = dynamic_tax["rate"]
+        template = tax_cfg.get("label_template")
+        label = template.format(rate=round(rate * 100)) if template else tax_cfg["label"]
+        entity = {**entity, "tax": {**tax_cfg, "rate": rate, "label": label}}
+    else:
+        rate = tax_cfg["rate"]
+
+    tax_amount = round(subtotal * rate, 2)
     total = subtotal + tax_amount
 
     layout_builders = {

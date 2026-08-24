@@ -20,6 +20,7 @@ from pdf.generate_invoice_pdf_intl import render_international_invoice
 from save_api.excel_writer import load_schema
 from utils.xlsx_io import TRACKER_LOCK
 from utils.tracker_io import load_tracker_with_retry, save_tracker, tracker_ref_from_config
+from tax.tax_calculator import tax_result_from_stored
 
 from draft_mailer.email_composer import compose_email
 from draft_mailer.gmail_imap import connect, find_drafts_folder, build_draft_mime, append_draft
@@ -30,6 +31,14 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 
 # Tabs scanned for rows whose Review Status is "Reviewed".
 REVIEWABLE_ENTITIES = ["usa", "uk", "poland", "singapore"]
+
+# Entities whose PDF actually shows a client-conditional tax line (their
+# real-world rate depends on the client's own country -- see
+# tax.tax_calculator). Poland and USA are always 0% regardless of client,
+# so their PDF keeps using its static config/entities/*.json rate/label
+# untouched -- see _row_to_intl_row() and generate_invoice_pdf_intl.py's
+# _totals_block().
+DYNAMIC_TAX_PDF_ENTITIES = {"uk", "singapore"}
 
 POLL_INTERVAL_ENV = "DRAFT_POLL_INTERVAL_SECONDS"
 DEFAULT_POLL_INTERVAL_SECONDS = 300
@@ -164,12 +173,24 @@ def _coerce_amount(value):
         return 0.0
 
 
-def _row_to_intl_row(entity_key, row):
+def _row_to_intl_row(entity_key, row, tax_result):
     """Adapts a tracker row into the shape
     generate_invoice_pdf_intl.render_international_invoice() expects.
     client_address_lines/po_no/po_date/due_date aren't tracked by the
     current minimal schema, so they're simply omitted -- the renderer
-    already treats a missing value as "don't show this line"."""
+    already treats a missing value as "don't show this line".
+
+    The row's own "Total Amount" column is the POST-tax grand total (see
+    excel_writer.build_row()), so the PDF's subtotal comes from
+    `tax_result["subtotal"]` (reconstructed from the row -- see
+    tax_result_from_stored()), never straight from row["total"] -- feeding
+    the grand total in as if it were the subtotal would double the tax on
+    the rendered PDF.
+
+    `tax_result` is only attached as intl_row["tax"] for
+    DYNAMIC_TAX_PDF_ENTITIES -- Poland and USA's PDF keeps rendering from
+    their static, always-correct config/entities/*.json rate/label,
+    exactly as before this feature."""
     description = row.get("invoice_description") or ""
     intl_row = {
         "invoice_no": row.get("invoice_no"),
@@ -181,10 +202,12 @@ def _row_to_intl_row(entity_key, row):
         "currency": row.get("currency") or None,
     }
     if entity_key == "usa":
-        intl_row["line_items"] = [{"label": description or "Services", "amount": _coerce_amount(row.get("total"))}]
+        intl_row["line_items"] = [{"label": description or "Services", "amount": tax_result["subtotal"]}]
     else:
         intl_row["description"] = description
-        intl_row["subtotal"] = _coerce_amount(row.get("total"))
+        intl_row["subtotal"] = tax_result["subtotal"]
+    if entity_key in DYNAMIC_TAX_PDF_ENTITIES:
+        intl_row["tax"] = tax_result
     return intl_row
 
 
@@ -194,10 +217,33 @@ def process_row(entity_key, row, imap, from_addr, drafts_folder, tracker_ref):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     pdf_path = OUTPUT_DIR / f"invoice_{safe_inv}.pdf"
 
-    intl_row = _row_to_intl_row(entity_key, row)
+    # Reconstructed ONCE per row, from the row's own already-saved Total
+    # Amount + VAT/GST columns (NOT recomputed from a fresh rate lookup --
+    # see tax_result_from_stored()'s own docstring for why), and reused for
+    # both the PDF (UK/Singapore only, see DYNAMIC_TAX_PDF_ENTITIES) and
+    # the drafted email (every entity) -- so the two documents can never
+    # disagree with each other, or with what's already sitting in the
+    # sheet, about the tax charged on this invoice.
+    tax_result = tax_result_from_stored(
+        entity_key, row.get("country"), _coerce_amount(row.get("total")), _coerce_amount(row.get("vat")),
+    )
+
+    intl_row = _row_to_intl_row(entity_key, row, tax_result)
     render_international_invoice(entity_key, intl_row, pdf_path)
 
-    draft = compose_email(row)
+    row_for_email = dict(row)
+    row_for_email.update({
+        # NOTE: "subtotal" here (pre-tax) is deliberately distinct from the
+        # row's own "total" key (post-tax grand total, per
+        # excel_writer.build_row()) -- email_composer.py/llm_drafter.py
+        # must show THIS as the Sub-Total line, never row["total"].
+        "subtotal": tax_result["subtotal"],
+        "tax_name": tax_result["tax_name"],
+        "tax_rate": tax_result["rate"],
+        "tax_amount": tax_result["tax_amount"],
+        "total_with_tax": tax_result["total"],
+    })
+    draft = compose_email(row_for_email)
     mime_msg = build_draft_mime(
         from_addr=from_addr, to_list=draft["to"], cc_list=draft["cc"],
         subject=draft["subject"], body_text=draft["body"],

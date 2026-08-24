@@ -1,6 +1,6 @@
 {
-  "_comment": "NEW tab -- no real rows exist yet, so nothing here overwrites live data (unlike the UK/Poland unification). Column layout follows the established 'USA is the standard layout' precedent (see uk.json/poland.json's own _comment): same 23-column set as USA, with 'Country' in place of 'State' (matching UK/Poland, since Singapore is a client-billing entity like they are, not a US-state concept) and no VAT/GST column, because tax treatment was not specified by the user. Header wording mirrors UK's style (Client Name / Client Mail To / INT CC Mail / PF ID) since UK is the closest existing precedent for a non-US entity.",
-  "_tax_note": "tax.type is set to 'none' as a DEFAULT, not a confirmed instruction -- the user only specified tab name, invoice numbering, and default currency (SGD). If Singapore invoices need GST (commonly 9%) added, tell me the rate and I'll add a GST column + update the tax block and the PDF entity config, the same way Poland's VAT rate was set explicitly.",
+  "_comment": "NEW tab -- no real rows exist yet, so nothing here overwrites live data (unlike the UK/Poland unification). Column layout follows the established 'USA is the standard layout' precedent (see uk.json/poland.json's own _comment): same column set as USA, with 'Country' in place of 'State' (matching UK/Poland, since Singapore is a client-billing entity like they are, not a US-state concept). Header wording mirrors UK's style (Client Name / Client Mail To / INT CC Mail / PF ID) since UK is the closest existing precedent for a non-US entity.",
+  "_tax_note": "2026-08-24: 'GST' (key 'vat') added back, placed right after 'Total Amount' -- matching UK/Poland's own placement convention for their tax-amount column, and the position the user is adding it at by hand directly in the live Google Sheet (not via a migration script). Headers for both this column and 'Total Amount' deliberately carry NO currency suffix (no '(SGD)') -- unlike UK's 'VAT (GBP)'/Poland's 'Total Amount (Including VAT)', Singapore is multi-currency (see the existing 'Currency' column), so a fixed '(SGD)' label would be wrong for a non-SGD invoice. IMPORTANT: this schema's column ORDER must exactly match the live sheet's actual header row left-to-right, or every column after the mismatch point will get written into the wrong cell. If the live column ends up anywhere other than immediately after 'Total Amount', or the live header text differs from what's listed here, tell Claude the real position/text (or paste the header row) so this file gets corrected before any Singapore invoice is saved against it.",
   "_entity_pdf_note": "This file only controls the tracker tab (Google Sheet columns + invoice numbering). A separate config/entities/singapore.json is required for PDF drafting (company legal name, address, bank details, tax treatment) and has NOT been created yet -- it needs real company/bank details that must come from you, not be guessed.",
   "entity_key": "singapore",
   "sheet_name": "Singapore",
@@ -18,7 +18,8 @@
     { "header": "Invoice No.",                 "key": "invoice_no" },
     { "header": "Client Name",                 "key": "client_company" },
     { "header": "Invoice Description",         "key": "invoice_description" },
-    { "header": "Total Amount (SGD)",          "key": "total" },
+    { "header": "Total Amount",                "key": "total" },
+    { "header": "GST",                          "key": "vat" },
     { "header": "Client Mail To",              "key": "client_mail_to" },
     { "header": "INT CC Mail",                 "key": "int_cc_mail" },
     { "header": "Payment Status",              "key": "payment_status" },
@@ -34,7 +35,7 @@
     { "header": "Currency",                    "key": "currency" }
   ],
   "default_currency": "SGD",
-  "tax": { "type": "none" },
+  "tax": { "type": "gst", "rate": 0.09 },
   "invoice_numbering": {
     "prefix": "INT/SGP",
     "financial_year": "26-27",

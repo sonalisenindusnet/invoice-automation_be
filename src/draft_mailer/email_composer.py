@@ -23,15 +23,46 @@ def _build_subject(row, description):
     return f"Invoice {row.get('invoice_no')} - {row.get('client_company')} - {description}".strip()
 
 
-def _fallback_body(row, description):
-    total = row.get("total")
+def _money(value, currency):
+    try:
+        return f"{currency} {float(value):,.2f}".strip()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _payable_block(row):
+    """Sub-Total / Tax / Total breakdown when tax fields are present (see
+    poller.process_row(), which always sets them before calling
+    compose_email() now) -- matches the PDF's own Sub-Total -> Tax -> Total
+    structure, and states the tax name/rate explicitly even when it's 0%,
+    per explicit instruction ("the tax name is important for the draft
+    email body"). Falls back to a single "Total Payable" line if this row
+    has no tax fields at all (e.g. a direct/test call to compose_email()).
+
+    NOTE: the Sub-Total line reads `row["subtotal"]` (the PRE-tax amount,
+    set by poller.process_row() alongside the other tax fields) --
+    deliberately NOT `row["total"]`, which is the tracker's own POST-tax
+    grand total (see excel_writer.build_row()). Using "total" here would
+    double-count the tax in what's shown as the Sub-Total."""
     currency = row.get("currency") or ""
-    total_str = f"{currency} {float(total):,.2f}" if total not in (None, "") else ""
+    tax_name = row.get("tax_name")
+    if not tax_name:
+        return f"Total Payable: {_money(row.get('total'), currency)}"
+
+    tax_rate_pct = round((row.get("tax_rate") or 0) * 100)
+    return (
+        f"Sub-Total: {_money(row.get('subtotal'), currency)}\n"
+        f"{tax_name} ({tax_rate_pct}%): {_money(row.get('tax_amount'), currency)}\n"
+        f"Total Payable: {_money(row.get('total_with_tax'), currency)}"
+    )
+
+
+def _fallback_body(row, description):
     return f"""Dear Team,
 
 Please find attached the invoice {row.get('invoice_no')} for {description}.
 
-Total Payable: {total_str}
+{_payable_block(row)}
 
 Kindly process the payment at your earliest convenience. Please let us know if any further information or supporting documents are required.
 

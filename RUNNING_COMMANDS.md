@@ -34,6 +34,14 @@ EMAIL_APP_PASSWORD=your-16-character-app-password
 GEMINI_API_KEY=your-gemini-key
 PAYMENT_DUE_DAYS=7
 DRAFT_POLL_INTERVAL_SECONDS=300
+TAX_RATE_SINGAPORE_LOCAL=0.09
+TAX_RATE_SINGAPORE_FOREIGN=0.0
+TAX_RATE_UK_LOCAL=0.20
+TAX_RATE_UK_FOREIGN=0.0
+TAX_RATE_POLAND_LOCAL=0.0
+TAX_RATE_POLAND_FOREIGN=0.0
+TAX_RATE_USA_LOCAL=0.0
+TAX_RATE_USA_FOREIGN=0.0
 ```
 
 - `EMAIL_ADDRESS` / `EMAIL_APP_PASSWORD` are only needed for the draft
@@ -49,7 +57,20 @@ DRAFT_POLL_INTERVAL_SECONDS=300
   draft loop re-scans the tracker. Defaults to 300 (5 minutes) if unset or
   not a valid whole number. `--interval` on the command line overrides
   both.
-- The save API itself needs neither the email nor Gemini credentials.
+- `TAX_RATE_<ENTITY>_LOCAL` / `TAX_RATE_<ENTITY>_FOREIGN` (all 8 above are
+  optional — every default shown matches the actual tax rule already in
+  effect) control `src/tax/tax_calculator.py`, the single source of truth
+  for invoice tax. Tax depends on whether the **client's own country**
+  matches the entity the invoice is raised from: `LOCAL` is the rate
+  charged when it matches (e.g. a Singapore client on a Singapore
+  invoice), `FOREIGN` is the rate otherwise. Only Singapore (9%/0%) and UK
+  (20%/0%) actually vary today — Poland and USA are 0% either way, per
+  explicit instruction, but still have their own env vars in case that
+  ever changes. The tax name shown (GST for Singapore, VAT for the other
+  three) is fixed by each country's own tax law, not configurable.
+- The save API itself needs neither the email nor Gemini credentials, but
+  does use the `TAX_RATE_*` vars (to report the tax breakdown in its
+  response).
 
 ## Run everything (recommended)
 
@@ -86,17 +107,52 @@ curl -X POST http://localhost:5000/invoice/api/v1/invoice-generation \
         "contactPersonName": "Jane Doe",
         "clientMailTo": "jane@example.com",
         "intCcMailId": "accounts@intglobal.com",
+        "companyLocation": "United States",
         "currency": "USD",
         "invoiceValue": "1000",
         "entity": "usa"
       }'
 ```
 
-This appends a row into the real "USA" tab, assigns the next invoice
-number in that tab's series, stamps a "Created At" timestamp, and
-auto-fills **Payment Status** (`Not Paid`), **Payment Due Date**
-(invoice date + `PAYMENT_DUE_DAYS`), and **Review Status**
-(`Pending Review`).
+The client's own country/location field. **Either spelling is accepted**:
+`companyLocation` (camelCase, matching this request's other fields) or
+`company_location` (snake_case). This was originally specified as
+snake_case only, but a live request on 2026-08-24 showed camelCase being
+sent instead — since an unrecognized JSON key is silently ignored (not an
+error), that request's country was quietly dropped and treated as
+"foreign" with no visible error, until the blank-value WARNING log caught
+it. The API now accepts both spellings so it works either way; if both
+are somehow sent in the same request, `company_location` wins. It's what
+`src/tax/tax_calculator.py` compares against the entity to decide the
+LOCAL vs FOREIGN tax rate (see the `.env` section above); for
+UK/Poland/Singapore it's also stored in that tab's existing "Country"
+column. Matching tolerates punctuation, case, and compound values
+("U.K.", "England, UK") — see that module's own docstring for exactly
+what's recognized. Safe to omit entirely — an empty/missing value is
+treated as "foreign" (the lower rate), never accidentally triggers the
+higher local rate, but the save API logs a WARNING when it's blank so a
+frontend-side issue doesn't fail silently.
+
+This appends a row into the real tab, assigns the next invoice number in
+that tab's series, stamps a "Created At" timestamp, and auto-fills
+**Payment Status** (`Not Paid`), **Payment Due Date** (invoice date +
+`PAYMENT_DUE_DAYS`), and **Review Status** (`Pending Review`). Tax is
+computed from `companyLocation`/`company_location` and the entity (see
+above) and **is baked into the tracker itself**: the tab's own **"Total
+Amount"** column is set to the POST-tax grand total (subtotal + tax —
+matching the column's own real-world meaning; Poland's actual header is
+literally "Total Amount (Including VAT)"), and where the tab has its own
+tax column (UK/Poland's "VAT (GBP)" today), that column gets the tax
+amount. USA (and Singapore, until it gets a GST column) has no separate
+tax column — fine, since its tax is always 0 either way. The response
+also echoes the same breakdown (`tax_name`, `tax_rate`, `tax_amount`,
+`subtotal` — the pre-tax figure the frontend originally sent,
+`total_with_tax` — same as the sheet's own "Total Amount"). The SAME
+figures are what actually show on the PDF and in the drafted email
+later, once a human marks the row "Reviewed" and MIS-verifies it — the
+draft loop reconstructs them from what's already saved in the sheet
+rather than recomputing from scratch, so they can never disagree with
+what an accountant sees in the tracker.
 
 ## Draft loop trigger
 

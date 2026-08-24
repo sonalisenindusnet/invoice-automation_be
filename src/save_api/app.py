@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 SRC_DIR = Path(__file__).resolve().parent.parent
 if str(SRC_DIR) not in sys.path:
@@ -60,11 +60,25 @@ class InvoiceGenerationRequest(BaseModel):
     intCcMailId: str = ""
     workOrder: str = ""
     masterProjectId: str = ""
+    # Originally told the frontend sends this as "company_location"
+    # (snake_case, unlike every other field on this request). A live test
+    # on 2026-08-24 showed a request actually using "companyLocation"
+    # (camelCase, matching this model's other fields) instead -- which
+    # Pydantic silently ignored, since an unrecognized key just falls back
+    # to the default "" rather than erroring. Accepting BOTH spellings here
+    # means whichever one the frontend actually sends works, instead of
+    # this field quietly going blank (and every invoice being taxed as
+    # "foreign") again if it changes back.
+    company_location: str = Field(
+        default="",
+        validation_alias=AliasChoices("company_location", "companyLocation"),
+    )
     currency: str = "USD"
     projectValue: str = ""
     invoiceValue: str = Field(..., min_length=1)
     invoiceType: str = ""
     entity: str = Field(..., min_length=1)
+    raisedByEmail: str =""
 
 
 class MisVerificationUpdateRequest(BaseModel):
@@ -115,6 +129,7 @@ def convert_request(request: InvoiceGenerationRequest):
         "invoice_description": request.invoiceDescription.strip(),
         "master_project_id": request.masterProjectId.strip(),
         "work_order": request.workOrder.strip(),
+        "client_country": request.company_location.strip(),
         "currency": request.currency.strip().upper(),
         "invoice_value": {"amount": invoice_amount},
         "client_mail_to": client_mail_to,
@@ -129,7 +144,26 @@ def health_check():
 
 @app.post("/invoice/api/v1/invoice-generation")
 def invoice_generation(request: InvoiceGenerationRequest):
-    logger.info("Invoice save request received: PF ID=%s, entity=%s", request.pfId, request.entity)
+    logger.info("========== RECEIVED REQUEST ==========")
+    logger.info("Request data: %s", request.model_dump())
+    logger.info("======================================")
+    logger.info(
+        "Invoice save request received: PF ID=%s, entity=%s, company_location=%r",
+        request.pfId, request.entity, request.company_location,
+    )
+    if not request.company_location.strip():
+        # Not an error -- a blank/missing value is deliberately treated as
+        # "foreign" (see tax.tax_calculator), so this never blocks a save.
+        # But it's worth a visible WARNING (not just silence) since a wrong
+        # field name/transport on the frontend's side would look exactly
+        # like this -- every invoice quietly getting the foreign tax rate
+        # with no error anywhere. If you're expecting a value here and see
+        # this warning instead, check what the frontend is actually sending.
+        logger.warning(
+            "Invoice save request for PF ID=%s has no company_location -- "
+            "will be treated as a foreign client (0%% local tax rate) for tax purposes",
+            request.pfId,
+        )
 
     entity_key = normalize_entity(request.entity)
     data = convert_request(request)
@@ -149,7 +183,26 @@ def invoice_generation(request: InvoiceGenerationRequest):
         raise HTTPException(status_code=500, detail=f"Invoice save failed: {exc}")
 
     row = result["row"]
-    logger.info("Invoice saved: %s into '%s' for PF ID=%s", row.get("invoice_no"), result["sheet"], row.get("pf_id"))
+    tax = result["tax"]
+    if request.company_location.strip() and not tax["country_recognized"]:
+        # The frontend's client-location field is a fixed dropdown as of
+        # 2026-08-24 (only ever "United States"/"United Kingdom"/
+        # "Singapore"/"Poland") -- so a non-blank value that matches NONE
+        # of them is now a real bug signal (a dropdown change, an encoding
+        # issue, a new value nobody told this service about), not normal
+        # variation. The save still proceeds with the foreign tax rate
+        # either way -- this is visibility, not a block.
+        logger.warning(
+            "Invoice save request for PF ID=%s has company_location=%r, which "
+            "doesn't match any known country -- expected one of the fixed "
+            "dropdown values. Tax was computed as if this were a foreign client.",
+            request.pfId, request.company_location,
+        )
+    logger.info(
+        "Invoice saved: %s into '%s' for PF ID=%s (%s %.2f%% -> %s tax on %s subtotal)",
+        row.get("invoice_no"), result["sheet"], row.get("pf_id"),
+        tax["tax_name"], tax["rate"] * 100, tax["tax_amount"], tax["subtotal"],
+    )
 
     return {
         "success": True,
@@ -160,9 +213,25 @@ def invoice_generation(request: InvoiceGenerationRequest):
         "sheet": result["sheet"],
         "pf_id": row.get("pf_id"),
         "client_name": row.get("client_company"),
+        "company_location": row.get("country"),
         "invoice_value": row.get("total"),
         "currency": row.get("currency"),
         "created_at": row.get("created_at"),
+        # Tax breakdown -- computed from (entity, client_country, the
+        # REQUEST's raw pre-tax invoiceValue) via
+        # tax.tax_calculator.compute_tax(). "invoice_value" above is the
+        # row's own "Total Amount" column, which (2026-08-24) is the
+        # POST-tax grand total -- i.e. it equals "total_with_tax" below,
+        # NOT "subtotal". "subtotal" here is what the frontend originally
+        # sent as invoiceValue (before tax was added); "total" is
+        # subtotal + tax_amount, which is what actually got written to
+        # the tracker's "Total Amount" (and, where the tab has one, its
+        # VAT/GST column got "tax_amount").
+        "tax_name": tax["tax_name"],
+        "tax_rate": tax["rate"],
+        "tax_amount": tax["tax_amount"],
+        "subtotal": tax["subtotal"],
+        "total_with_tax": tax["total"],
     }
 
 
