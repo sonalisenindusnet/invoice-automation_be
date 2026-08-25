@@ -2,5 +2,5 @@
   "google_sheet_id": "1Pj7yz4opaAdv7TCjaGO_JMJaZGAV-5vFaLYPq9hk7PU",
   "google_service_account_json": "../credentials/service_account.json",
   "host": "0.0.0.0",
-  "port": 5000
+  "port": 8162
 }
