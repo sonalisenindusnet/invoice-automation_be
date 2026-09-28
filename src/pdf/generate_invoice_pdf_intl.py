@@ -37,7 +37,7 @@ ENTITIES_DIR = CONFIG_DIR / "entities"
 # static default (config/entities/*.json) — an invoice must show whatever
 # currency was actually billed, not just this entity's usual one.
 CURRENCY_SYMBOLS = {
-    "USD": "$", "GBP": "£", "INR": "Rs.", "EUR": "€", "PLN": "PLN", "SGD": "S$",
+    "USD": "$", "GBP": "£", "INR": "Rs.", "EURO": "€", "PLN": "PLN", "SGD": "S$",
 }
 
 # config/entities/*.json's "table_columns" bakes a default amount-column
@@ -497,14 +497,37 @@ def _totals_block(entity, row, sty, subtotal, currency_symbol):
     return build_layout(entity, subtotal, tax_amount, total, csym)
 
 
-def _bank_details_block(entity, sty):
+def _bank_details_block(entity, sty, currency_code):
+    """Most entities have one fixed `bank_details` block. A multi-currency
+    entity (Singapore today) instead has `bank_details_by_currency`, keyed
+    by 3-letter currency code -- the block shown must match the currency
+    actually billed on THIS invoice (currency_code, from _resolve_currency),
+    never a fixed default, since each currency is a genuinely different
+    bank/account. If that entity is billed in a currency with no configured
+    bank details, this raises rather than silently showing the wrong
+    account -- add the missing currency's block to
+    config/entities/<entity>.json before this invoice can be drafted."""
     normal = sty["normal"]
-    bank = entity.get("bank_details", {})
+    by_currency = entity.get("bank_details_by_currency")
+    if by_currency:
+        code = (currency_code or "").strip().upper()
+        bank = by_currency.get(code)
+        if bank is None:
+            raise ValueError(
+                f"Entity '{entity.get('entity_key')}' has no bank_details_by_currency "
+                f"entry for currency {code!r} (configured: {sorted(by_currency)}) -- "
+                f"add one to config/entities/{entity.get('entity_key')}.json before "
+                f"this invoice can be drafted."
+            )
+    else:
+        bank = entity.get("bank_details", {})
     label_map = [
         ("bank_name", "Bank Name"), ("bank_address", "Bank Address"),
         ("beneficiary_name", "Beneficiary Name"), ("account_name", "A/C Name"),
         ("account_number", "Account Number" if "beneficiary_name" in bank else "A/C No"),
         ("aba_routing_number", "ABA Routing Number"), ("swift_code", "SWIFT Code"),
+        ("bank_code", "Bank Code"), ("branch_code", "Branch Code"),
+        ("iban", "IBAN"), ("bic", "BIC"),
         ("sort_code", "Sort Code"), ("type_of_account", "Type of Account"),
         ("account_type", "Account Type"), ("beneficiary_address", "Beneficiary Address"),
     ]
@@ -662,7 +685,7 @@ def render_international_invoice(entity_key, row, out_path):
     story.append(Spacer(1, 8 * mm))
     story.append(Paragraph(_payment_intro_line(entity), ParagraphStyle("PaymentIntro", parent=sty["normal"], fontSize=9)))
     story.append(Spacer(1, 2 * mm))
-    story.extend(_bank_details_block(entity, sty))
+    story.extend(_bank_details_block(entity, sty, currency_code))
     story.append(Spacer(1, 4 * mm))
 
     note_line = entity.get(

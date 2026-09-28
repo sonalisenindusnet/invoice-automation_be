@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,7 @@ if str(SRC_DIR) not in sys.path:
 from save_api.excel_writer import (
     save_invoice, update_mis_verified, UnknownEntityError, RowNotFoundError, PfIdMismatchError,
 )
+from save_api.dedicated_invoice import consolidate_resources_by_email
 from utils.tracker_io import tracker_ref_from_config
 
 PROJECT_ROOT = SRC_DIR.parent
@@ -67,7 +69,7 @@ NULLABLE_TO_EMPTY_FIELDS = (
     "accountName", "invoiceDescription", "contactPersonName", "clientMailTo",
     "clientMailCc", "intCcMailId", "workOrder", "masterProjectId",
     "company_location", "companyLocation", "projectValue", "invoiceType",
-    "raisedByEmail",
+    "raisedByEmail", "companyAddress",
 )
 
 
@@ -98,7 +100,7 @@ class InvoiceGenerationRequest(BaseModel):
     # Required, no default -- per explicit instruction, a save request that
     # doesn't specify a currency should fail loudly (422), not be silently
     # assumed to be USD. This matters most for Singapore (multi-currency:
-    # SGD, USD, EUR, ... depending on the client), but applies to every
+    # SGD, USD, EURO, ... depending on the client), but applies to every
     # entity now -- the frontend must always say which currency an invoice
     # is actually in.
     currency: str = Field(..., min_length=1)
@@ -113,6 +115,7 @@ class InvoiceGenerationRequest(BaseModel):
     # clientMailTo as a placeholder; this is the real source now that the
     # frontend sends it.
     raisedByEmail: str = ""
+    companyAddress: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -120,6 +123,46 @@ class InvoiceGenerationRequest(BaseModel):
         """See NULLABLE_TO_EMPTY_FIELDS above for why this exists."""
         if isinstance(data, dict):
             for key in NULLABLE_TO_EMPTY_FIELDS:
+                if key in data and data[key] is None:
+                    data[key] = ""
+        return data
+
+
+class ResourceItem(BaseModel):
+    pfId: str = Field(..., min_length=1)
+    resourceName: str = Field(..., min_length=1)
+    invoiceAmount: str = Field(..., min_length=1)
+    resouceEmail: str = ""  # Note: typo preserved to match frontend
+
+
+class DedicatedInvoiceGenerationRequest(BaseModel):
+    pfId: str = Field(..., min_length=1)
+    clientName: str = Field(..., min_length=1)
+    contactPersonName: str = ""
+    clientMailTo: str = ""
+    clientMailCc: str = ""
+    intCcMailId: str = ""
+    clientType: str = ""
+    raisedByEmail: str = ""
+    companyLocation: str = ""
+    companyAddress: str = ""
+    companyGeography: str = ""
+    entity: str = Field(..., min_length=1)
+    currency: str = Field(..., min_length=1)
+    invoiceValue: str = Field(..., min_length=1)
+    invoiceDescription: str = ""
+    resources: List[ResourceItem] = Field(..., min_items=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_optional_strings_to_empty(cls, data):
+        if isinstance(data, dict):
+            nullable_fields = (
+                "contactPersonName", "clientMailTo", "clientMailCc", "intCcMailId",
+                "clientType", "raisedByEmail", "companyLocation", "companyAddress",
+                "companyGeography", "invoiceDescription",
+            )
+            for key in nullable_fields:
                 if key in data and data[key] is None:
                     data[key] = ""
         return data
@@ -178,6 +221,7 @@ def convert_request(request: InvoiceGenerationRequest):
         "invoice_value": {"amount": invoice_amount},
         "client_mail_to": client_mail_to,
         "int_cc_mail": int_cc_mail,
+        "company_address": request.companyAddress.strip(),
     }
 
 
@@ -268,6 +312,96 @@ def invoice_generation(request: InvoiceGenerationRequest):
         # subtotal + tax_amount, which is what actually got written to
         # the tracker's "Total Amount" (and, where the tab has one, its
         # VAT/GST column got "tax_amount").
+        "tax_name": tax["tax_name"],
+        "tax_rate": tax["rate"],
+        "tax_amount": tax["tax_amount"],
+        "subtotal": tax["subtotal"],
+        "total_with_tax": tax["total"],
+    }
+
+
+@app.post("/invoice/api/v1/dedicated-invoice-generation")
+def dedicated_invoice_generation(request: DedicatedInvoiceGenerationRequest):
+    logger.info(
+        "Dedicated invoice save request received: PF ID=%s, entity=%s, resources=%d",
+        request.pfId, request.entity, len(request.resources),
+    )
+
+    entity_key = normalize_entity(request.entity)
+
+    try:
+        invoice_amount = float(request.invoiceValue)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invoiceValue must be a valid number")
+    if invoice_amount < 0:
+        raise HTTPException(status_code=400, detail="invoiceValue cannot be negative")
+
+    # Consolidate resources by email
+    consolidated = consolidate_resources_by_email(
+        [r.model_dump() for r in request.resources]
+    )
+
+    # Build description for Excel from consolidated resources
+    excel_description = consolidated["description"]
+
+    # Prepare base invoice data
+    client_mail_to = [request.clientMailTo.strip()] if request.clientMailTo.strip() else []
+    int_cc_mail = [request.intCcMailId.strip()] if request.intCcMailId.strip() else []
+
+    data = {
+        "pf_id": request.pfId.strip(),
+        "client_company": request.clientName.strip(),
+        "client_contact_person": request.contactPersonName.strip(),
+        "invoice_description": request.invoiceDescription.strip(),  # Original description for email and Excel
+        "client_country": request.companyLocation.strip(),
+        "currency": request.currency.strip().upper(),
+        "invoice_value": {"amount": invoice_amount},
+        "client_mail_to": client_mail_to,
+        "int_cc_mail": int_cc_mail,
+        "company_address": request.companyAddress.strip(),
+        # Store consolidated resources in resource_description column for PDF generation
+        "resource_description": excel_description,
+    }
+
+    try:
+        cfg = load_config()
+        tracker_ref = tracker_path_from_config(cfg)
+        result = save_invoice(
+            data, entity_key, tracker_ref, requested_by=request.raisedByEmail,
+        )
+    except UnknownEntityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Dedicated invoice save failed for PF ID=%s", request.pfId)
+        raise HTTPException(status_code=500, detail=f"Dedicated invoice save failed: {exc}")
+
+    row = result["row"]
+    tax = result["tax"]
+
+    logger.info(
+        "Dedicated invoice saved: %s into '%s' for PF ID=%s with %d consolidated resources",
+        row.get("invoice_no"), result["sheet"], row.get("pf_id"),
+        len(consolidated["consolidated_resources"]),
+    )
+
+    return {
+        "success": True,
+        "status": "saved",
+        "message": "Dedicated invoice saved successfully",
+        "invoice_no": row.get("invoice_no"),
+        "entity": entity_key,
+        "sheet": result["sheet"],
+        "pf_id": row.get("pf_id"),
+        "client_name": row.get("client_company"),
+        "company_location": row.get("country"),
+        "invoice_value": row.get("total"),
+        "currency": row.get("currency"),
+        "created_at": row.get("created_at"),
+        "resources_count": len(consolidated["consolidated_resources"]),
+        "resources": consolidated["consolidated_resources"],
+        "excel_description": consolidated["description"],
         "tax_name": tax["tax_name"],
         "tax_rate": tax["rate"],
         "tax_amount": tax["tax_amount"],

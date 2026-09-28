@@ -8,8 +8,6 @@
   "nip_label": "NIP NO",
   "nip_no": "5214106371",
   "query_line": "accountsint@intglobal.com",
-  "currency": "USD",
-  "currency_symbol": "$",
   "table_mode": "single_line",
   "table_columns": ["SL NO.", "DESCRIPTION", "AMOUNT(USD)"],
   "show_month_subheader": true,
@@ -26,13 +24,22 @@
   "invoice_number_prefix": "INT/PL",
   "financial_year_format": "2026",
   "due_days": null,
-  "bank_details": {
-    "bank_name": "Citibank",
-    "bank_address": "111 Wall Street New York, NY 10043 USA",
-    "beneficiary_name": "INDUS NET TECHNOLOGIES sp z o o",
-    "account_number": "70586020001738559",
-    "aba_routing_number": "031100209",
-    "swift_code": "CITIUS33",
-    "account_type": "CHECKING"
+  "bank_details_by_currency": {
+    "EURO": {
+      "bank_name": "Citibank",
+      "bank_address": "1 North Wall Quay, International Financial Services Centre (IFSC), Dublin 1, Ireland",
+      "iban": "IE24CITI99005171263702",
+      "bic": "CITIIE2X",
+      "beneficiary_name": "INDUS NET TECHNOLOGIES sp z o o"
+    },
+    "USD": {
+      "bank_name": "Citibank",
+      "bank_address": "111 Wall Street New York, NY 10043 USA",
+      "beneficiary_name": "INDUS NET TECHNOLOGIES sp z o o",
+      "account_number": "70586020001738559",
+      "aba_routing_number": "031100209",
+      "swift_code": "CITIUS33",
+      "account_type": "CHECKING"
+    }
   }
 }

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pdf.generate_invoice_pdf_intl import render_international_invoice
 from save_api.excel_writer import load_schema
+from save_api.dedicated_invoice import is_dedicated_invoice, parse_consolidated_description
 from utils.xlsx_io import TRACKER_LOCK
 from utils.tracker_io import load_tracker_with_retry, save_tracker, tracker_ref_from_config
 from tax.tax_calculator import tax_result_from_stored
@@ -176,9 +177,13 @@ def _coerce_amount(value):
 def _row_to_intl_row(entity_key, row, tax_result):
     """Adapts a tracker row into the shape
     generate_invoice_pdf_intl.render_international_invoice() expects.
-    client_address_lines/po_no/po_date/due_date aren't tracked by the
-    current minimal schema, so they're simply omitted -- the renderer
-    already treats a missing value as "don't show this line".
+    po_no/po_date/due_date aren't tracked by the current minimal schema,
+    so they're simply omitted -- the renderer already treats a missing
+    value as "don't show this line". client_address_lines IS tracked (the
+    "Company Address" column, added 2026-08-27) -- it's a single free-text
+    cell, not multiple lines, so it's wrapped in a one-element list; the
+    renderer prints each list entry on its own line right below the bold
+    client name.
 
     The row's own "Total Amount" column is the POST-tax grand total (see
     excel_writer.build_row()), so the PDF's subtotal comes from
@@ -190,22 +195,47 @@ def _row_to_intl_row(entity_key, row, tax_result):
     `tax_result` is only attached as intl_row["tax"] for
     DYNAMIC_TAX_PDF_ENTITIES -- Poland and USA's PDF keeps rendering from
     their static, always-correct config/entities/*.json rate/label,
-    exactly as before this feature."""
+    exactly as before this feature.
+
+    For dedicated invoices (multiple resources separated by " - $"), builds
+    line_items from the consolidated resources for all entities."""
     description = row.get("invoice_description") or ""
+    # For dedicated invoices, check the resource_description field
+    resource_description = row.get("resource_description") or ""
+
     intl_row = {
         "invoice_no": row.get("invoice_no"),
         "invoice_date": row.get("invoice_date"),
         "due_date": row.get("due_date") or None,
         "client_name": row.get("client_company") or "",
-        "client_address_lines": [],
+        "client_address_lines": [row["client_company_address"]] if row.get("client_company_address") else [],
         "month_label": _derive_month_label(description),
         "currency": row.get("currency") or None,
     }
-    if entity_key == "usa":
+
+    # Check if this is a dedicated invoice (using the resource_description field)
+    if is_dedicated_invoice(resource_description):
+        logger.info("Dedicated invoice detected for %s", row.get("invoice_no"))
+        resources = parse_consolidated_description(resource_description)
+        logger.info("Resource description: %s", resource_description)
+        logger.info("Parsed %d resources from dedicated invoice", len(resources))
+
+        if resources:
+            intl_row["line_items"] = [
+                {"label": res["name"], "amount": res["amount"]}
+                for res in resources
+            ]
+            logger.info("Built %d line items: %s", len(intl_row["line_items"]),
+                       [(item["label"], item["amount"]) for item in intl_row["line_items"]])
+        else:
+            logger.warning("No resources parsed from dedicated invoice description")
+            intl_row["line_items"] = [{"label": description or "Services", "amount": tax_result["subtotal"]}]
+    elif entity_key == "usa":
         intl_row["line_items"] = [{"label": description or "Services", "amount": tax_result["subtotal"]}]
     else:
         intl_row["description"] = description
         intl_row["subtotal"] = tax_result["subtotal"]
+
     if entity_key in DYNAMIC_TAX_PDF_ENTITIES:
         intl_row["tax"] = tax_result
     return intl_row
