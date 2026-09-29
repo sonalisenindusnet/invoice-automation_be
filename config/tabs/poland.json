@@ -10,7 +10,7 @@
   "legend_row": null,
   "company_column_key": "client_company",
   "columns": [
-    { "header": "Date",                              "key": "invoice_date" },
+    { "header": "Invoice Date",                              "key": "invoice_date" },
     { "header": "Invoice Advice By",                  "key": "requested_by" },
     { "header": "Country",                            "key": "country" },
     { "header": "Business Model",                     "key": "business_model" },
@@ -28,7 +28,7 @@
     { "header": "Received amount",                    "key": "received_amount" },
     { "header": "Payment due date",                   "key": "due_date" },
     { "header": "Transaction ID",                     "key": "transaction_id" },
-    { "header": "Date",                               "key": "payment_date" },
+    { "header": "Received Date",                               "key": "payment_date" },
     { "header": "Remarks",                            "key": "remarks" },
     { "header": "Amount to be transferred",           "key": "amount_to_transfer" },
     { "header": "Review Status",                      "key": "review_status" },

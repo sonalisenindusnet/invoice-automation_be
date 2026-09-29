@@ -87,6 +87,14 @@ class PfIdMismatchError(ValueError):
     the wrong project's row on a typo'd invoice number."""
 
 
+class SchemaDriftError(ValueError):
+    """Raised when config/tabs/<entity>.json's columns no longer match the
+    live sheet's real header row (a header the schema expects is missing or
+    renamed). Failing loudly here is deliberate: writing a new row by raw
+    column position when the live sheet has drifted from the schema is what
+    silently misplaces data into the wrong columns."""
+
+
 def load_schema(entity_key):
     path = TABS_DIR / f"{entity_key}.json"
     if not path.exists():
@@ -167,6 +175,38 @@ def _created_at_column(ws, header_row_idx):
     new_col = last_used_col + 1
     ws.cell(row=header_row_idx, column=new_col, value=CREATED_AT_HEADER)
     return new_col
+
+
+def _resolve_column_indices(ws, schema, header_row_idx):
+    """Maps each schema column's key -> its REAL column index in the live
+    sheet, by matching header text (case-insensitive, trimmed) against the
+    live header row -- not by trusting config/tabs/<entity>.json's array
+    position, which can silently drift out of sync with the real sheet (a
+    column inserted/split/reordered by hand) and cause values to be written
+    under the wrong header. Raises SchemaDriftError if a header the schema
+    expects isn't found live, rather than falling back to a guessed
+    position."""
+    live_headers = {}
+    for col_idx in range(1, ws.max_column + 1):
+        value = ws.cell(row=header_row_idx, column=col_idx).value
+        if isinstance(value, str) and value.strip():
+            live_headers[value.strip().lower()] = col_idx
+
+    key_to_col = {}
+    missing = []
+    for c in schema["columns"]:
+        col_idx = live_headers.get(c["header"].strip().lower())
+        if col_idx is None:
+            missing.append(c["header"])
+        else:
+            key_to_col[c["key"]] = col_idx
+    if missing:
+        raise SchemaDriftError(
+            f"'{schema['sheet_name']}' tab is missing header(s) the schema expects: "
+            f"{missing}. Update config/tabs/{schema['entity_key']}.json or fix the "
+            f"live sheet's header row."
+        )
+    return key_to_col
 
 
 def _find_row_by_invoice_no(ws, schema, invoice_no):
@@ -252,8 +292,10 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date, ta
         "invoice_no": invoice_no,
         "requested_by": requested_by or "",
         "client_company": data.get("client_company") or "",
+        "client_company_address": data.get("company_address") or "",
         "client_contact_person": data.get("client_contact_person") or "",
         "invoice_description": data.get("invoice_description") or "",
+        "resource_description": data.get("resource_description") or "",
         "work_order": data.get("work_order") or "",
         "pf_id": data.get("pf_id") or "",
         "master_project_id": data.get("master_project_id") or "",
@@ -268,6 +310,7 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date, ta
         "mis_verification_done": False,
         "country": data.get("client_country") or "",
         "invoice_advice_by": data.get("invoice_advised_by") or "",
+        "business_model": data.get("business_model") or "",
     }
     if any(c["key"] == TAX_AMOUNT_COLUMN_KEY for c in schema["columns"]):
         values[TAX_AMOUNT_COLUMN_KEY] = tax_result["tax_amount"]
@@ -311,14 +354,17 @@ def save_invoice(data, entity_key, tracker_ref, requested_by=None):
         due_date = (date.today() + timedelta(days=_payment_due_days())).isoformat()
         created_at = datetime.now().isoformat(timespec="seconds")
 
-        row_values, row_dict = build_row(
+        _, row_dict = build_row(
             data, schema, invoice_no, invoice_date, requested_by, due_date, tax_result,
         )
         row_dict["created_at"] = created_at
 
         target_row = _next_data_row(ws, schema)
-        for col_idx, value in enumerate(row_values, start=1):
-            ws.cell(row=target_row, column=col_idx, value=value)
+        key_to_col = _resolve_column_indices(ws, schema, header_row_idx)
+        for key, value in row_dict.items():
+            col_idx = key_to_col.get(key)
+            if col_idx is not None:
+                ws.cell(row=target_row, column=col_idx, value=value)
 
         created_at_col = _created_at_column(ws, header_row_idx)
         ws.cell(row=target_row, column=created_at_col, value=created_at)

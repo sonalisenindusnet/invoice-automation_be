@@ -13,6 +13,8 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import List
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +26,9 @@ if str(SRC_DIR) not in sys.path:
 
 from save_api.excel_writer import (
     save_invoice, update_mis_verified, UnknownEntityError, RowNotFoundError, PfIdMismatchError,
+    SchemaDriftError,
 )
+from save_api.dedicated_invoice import consolidate_resources_by_email
 from utils.tracker_io import tracker_ref_from_config
 
 PROJECT_ROOT = SRC_DIR.parent
@@ -46,7 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPPORTED_ENTITIES = {"usa", "uk", "poland", "singapore"}
+SUPPORTED_ENTITIES = {"usa", "uk", "poland","singapore"}
 
 # Frontend forms commonly send an explicit JSON `null` for an empty optional
 # field instead of omitting the key. Plain `str` fields reject `null`
@@ -67,7 +71,7 @@ NULLABLE_TO_EMPTY_FIELDS = (
     "accountName", "invoiceDescription", "contactPersonName", "clientMailTo",
     "clientMailCc", "intCcMailId", "workOrder", "masterProjectId",
     "company_location", "companyLocation", "projectValue", "invoiceType",
-    "raisedByEmail",
+    "raisedByEmail", "companyAddress",
 )
 
 
@@ -82,6 +86,7 @@ class InvoiceGenerationRequest(BaseModel):
     intCcMailId: str = ""
     workOrder: str = ""
     masterProjectId: str = ""
+    clientType: str = ""
     # Originally told the frontend sends this as "company_location"
     # (snake_case, unlike every other field on this request). A live test
     # on 2026-08-24 showed a request actually using "companyLocation"
@@ -98,7 +103,7 @@ class InvoiceGenerationRequest(BaseModel):
     # Required, no default -- per explicit instruction, a save request that
     # doesn't specify a currency should fail loudly (422), not be silently
     # assumed to be USD. This matters most for Singapore (multi-currency:
-    # SGD, USD, EUR, ... depending on the client), but applies to every
+    # SGD, USD, EURO, ... depending on the client), but applies to every
     # entity now -- the frontend must always say which currency an invoice
     # is actually in.
     currency: str = Field(..., min_length=1)
@@ -113,6 +118,7 @@ class InvoiceGenerationRequest(BaseModel):
     # clientMailTo as a placeholder; this is the real source now that the
     # frontend sends it.
     raisedByEmail: str = ""
+    companyAddress: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -120,6 +126,46 @@ class InvoiceGenerationRequest(BaseModel):
         """See NULLABLE_TO_EMPTY_FIELDS above for why this exists."""
         if isinstance(data, dict):
             for key in NULLABLE_TO_EMPTY_FIELDS:
+                if key in data and data[key] is None:
+                    data[key] = ""
+        return data
+
+
+class ResourceItem(BaseModel):
+    pfId: str = Field(..., min_length=1)
+    resourceName: str = Field(..., min_length=1)
+    invoiceAmount: str = Field(..., min_length=1)
+    resouceEmail: str = ""  # Note: typo preserved to match frontend
+
+
+class DedicatedInvoiceGenerationRequest(BaseModel):
+    pfId: str = Field(..., min_length=1)
+    clientName: str = Field(..., min_length=1)
+    contactPersonName: str = ""
+    clientMailTo: str = ""
+    clientMailCc: str = ""
+    intCcMailId: str = ""
+    clientType: str = ""
+    raisedByEmail: str = ""
+    companyLocation: str = ""
+    companyAddress: str = ""
+    companyGeography: str = ""
+    entity: str = Field(..., min_length=1)
+    currency: str = Field(..., min_length=1)
+    invoiceValue: str = Field(..., min_length=1)
+    invoiceDescription: str = ""
+    resources: List[ResourceItem] = Field(..., min_items=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_optional_strings_to_empty(cls, data):
+        if isinstance(data, dict):
+            nullable_fields = (
+                "contactPersonName", "clientMailTo", "clientMailCc", "intCcMailId",
+                "clientType", "raisedByEmail", "companyLocation", "companyAddress",
+                "companyGeography", "invoiceDescription",
+            )
+            for key in nullable_fields:
                 if key in data and data[key] is None:
                     data[key] = ""
         return data
@@ -178,6 +224,8 @@ def convert_request(request: InvoiceGenerationRequest):
         "invoice_value": {"amount": invoice_amount},
         "client_mail_to": client_mail_to,
         "int_cc_mail": int_cc_mail,
+        "company_address": request.companyAddress.strip(),
+        "business_model": request.clientType.strip(),
     }
 
 
@@ -217,6 +265,9 @@ def invoice_generation(request: InvoiceGenerationRequest):
         )
     except UnknownEntityError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except SchemaDriftError as exc:
+        logger.error("Schema drift detected for PF ID=%s: %s", request.pfId, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
     except HTTPException:
         raise
     except Exception as exc:
@@ -276,6 +327,100 @@ def invoice_generation(request: InvoiceGenerationRequest):
     }
 
 
+@app.post("/invoice/api/v1/dedicated-invoice-generation")
+def dedicated_invoice_generation(request: DedicatedInvoiceGenerationRequest):
+    logger.info(
+        "Dedicated invoice save request received: PF ID=%s, entity=%s, resources=%d",
+        request.pfId, request.entity, len(request.resources),
+    )
+
+    entity_key = normalize_entity(request.entity)
+
+    try:
+        invoice_amount = float(request.invoiceValue)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invoiceValue must be a valid number")
+    if invoice_amount < 0:
+        raise HTTPException(status_code=400, detail="invoiceValue cannot be negative")
+
+    # Consolidate resources by email
+    consolidated = consolidate_resources_by_email(
+        [r.model_dump() for r in request.resources]
+    )
+
+    # Build description for Excel from consolidated resources
+    excel_description = consolidated["description"]
+
+    # Prepare base invoice data
+    client_mail_to = [request.clientMailTo.strip()] if request.clientMailTo.strip() else []
+    int_cc_mail = [request.intCcMailId.strip()] if request.intCcMailId.strip() else []
+
+    data = {
+        "pf_id": request.pfId.strip(),
+        "client_company": request.clientName.strip(),
+        "client_contact_person": request.contactPersonName.strip(),
+        "invoice_description": request.invoiceDescription.strip(),  # Original description for email and Excel
+        "client_country": request.companyLocation.strip(),
+        "currency": request.currency.strip().upper(),
+        "invoice_value": {"amount": invoice_amount},
+        "client_mail_to": client_mail_to,
+        "int_cc_mail": int_cc_mail,
+        "company_address": request.companyAddress.strip(),
+        # Store consolidated resources in resource_description column for PDF generation
+        "resource_description": excel_description,
+        "business_model": request.clientType.strip(),
+    }
+
+    try:
+        cfg = load_config()
+        tracker_ref = tracker_path_from_config(cfg)
+        result = save_invoice(
+            data, entity_key, tracker_ref, requested_by=request.raisedByEmail,
+        )
+    except UnknownEntityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except SchemaDriftError as exc:
+        logger.error("Schema drift detected for PF ID=%s: %s", request.pfId, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Dedicated invoice save failed for PF ID=%s", request.pfId)
+        raise HTTPException(status_code=500, detail=f"Dedicated invoice save failed: {exc}")
+
+    row = result["row"]
+    tax = result["tax"]
+
+    logger.info(
+        "Dedicated invoice saved: %s into '%s' for PF ID=%s with %d consolidated resources",
+        row.get("invoice_no"), result["sheet"], row.get("pf_id"),
+        len(consolidated["consolidated_resources"]),
+    )
+
+    return {
+        "success": True,
+        "status": "saved",
+        "message": "Dedicated invoice saved successfully",
+        "invoice_no": row.get("invoice_no"),
+        "entity": entity_key,
+        "sheet": result["sheet"],
+        "pf_id": row.get("pf_id"),
+        "client_name": row.get("client_company"),
+        "company_location": row.get("country"),
+        "invoice_value": row.get("total"),
+        "currency": row.get("currency"),
+        "created_at": row.get("created_at"),
+        "resources_count": len(consolidated["consolidated_resources"]),
+        "resources": consolidated["consolidated_resources"],
+        "excel_description": consolidated["description"],
+        "tax_name": tax["tax_name"],
+        "tax_rate": tax["rate"],
+        "tax_amount": tax["tax_amount"],
+        "subtotal": tax["subtotal"],
+        "total_with_tax": tax["total"],
+    }
+
+
 @app.post("/invoice/api/v1/mis-verification")
 def mis_verification_update(request: MisVerificationUpdateRequest):
     logger.info(
@@ -315,4 +460,82 @@ def mis_verification_update(request: MisVerificationUpdateRequest):
         "sheet": result["sheet"],
         "invoice_no": result["invoice_no"],
         "mis_verification_done": result["mis_verification_done"],
+    }
+
+
+# Per-entity currency used for dummy data -- independent of each tab's
+# "default_currency" in config/tabs/*.json (that's just what gets written
+# when a request omits currency-parsing logic entirely; a real request can
+# and does send other currencies, as seen from the frontend).
+DUMMY_ENTITY_CURRENCY = {
+    "usa": "USD",
+    "uk": "GBP",
+    "poland": "EUR",
+    "singapore": "SGD",
+}
+
+
+def _build_dummy_dedicated_request(entity_key):
+    """Builds one DedicatedInvoiceGenerationRequest-shaped dummy payload for
+    `entity_key`, with a fresh unique pfId so repeated calls never collide
+    with real data or with each other."""
+    run_id = uuid4().hex[:8]
+    dummy_pf_id = f"DUMMY/{entity_key.upper()}/{run_id}"
+    return DedicatedInvoiceGenerationRequest(
+        pfId=dummy_pf_id,
+        clientName=f"Dummy Client {entity_key.upper()}",
+        contactPersonName="Dummy Contact",
+        clientMailTo="dummy.client@example.com",
+        clientMailCc="dummy.cc@example.com",
+        intCcMailId="dummy.int.cc@example.com",
+        clientType="ECB",
+        raisedByEmail="dummy.raisedby@example.com",
+        companyLocation="India",
+        companyAddress="123 Dummy Street",
+        companyGeography="India",
+        entity=entity_key.upper(),
+        currency=DUMMY_ENTITY_CURRENCY[entity_key],
+        invoiceValue="1500",
+        invoiceDescription=f"Dummy invoice for {entity_key.upper()} column-layout check",
+        resources=[
+            ResourceItem(
+                pfId=f"{dummy_pf_id}/1", resourceName="Dummy Resource One",
+                invoiceAmount="1000", resouceEmail="",
+            ),
+            ResourceItem(
+                pfId=f"{dummy_pf_id}/2", resourceName="Dummy Resource Two",
+                invoiceAmount="500", resouceEmail="",
+            ),
+        ],
+    )
+
+
+@app.post("/dummy-all-country-data")
+def dummy_all_country_data():
+    """Dev-only helper: saves one dummy invoice per supported entity by
+    calling dedicated_invoice_generation() directly (in-process -- no HTTP
+    call to this same server), so the tracker's per-entity column layout
+    can be eyeballed manually in each sheet without hand-crafting a request
+    per country."""
+    results = []
+    for entity_key in sorted(SUPPORTED_ENTITIES):
+        try:
+            request = _build_dummy_dedicated_request(entity_key)
+            response = dedicated_invoice_generation(request)
+            results.append({
+                "entity": entity_key,
+                "success": True,
+                "invoice_no": response["invoice_no"],
+                "sheet": response["sheet"],
+                "pf_id": response["pf_id"],
+            })
+        except HTTPException as exc:
+            results.append({"entity": entity_key, "success": False, "error": exc.detail})
+        except Exception as exc:
+            logger.exception("Dummy data generation failed for entity=%s", entity_key)
+            results.append({"entity": entity_key, "success": False, "error": str(exc)})
+
+    return {
+        "success": all(r["success"] for r in results),
+        "results": results,
     }
