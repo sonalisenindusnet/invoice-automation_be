@@ -39,7 +39,7 @@ from pathlib import Path
 
 from utils.xlsx_io import TRACKER_LOCK
 from utils.tracker_io import load_tracker_with_retry, save_tracker
-from tax.tax_calculator import compute_tax
+from services.tax_calculator import compute_tax
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TABS_DIR = PROJECT_ROOT / "config" / "tabs"
@@ -273,8 +273,8 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date, ta
     Verified (False, until the MIS-verification API flips it), and Country
     (the client's own country, from the request's "client_country" -- only
     written for tabs that actually have a Country/State column; this is
-    what tax.tax_calculator.compute_tax() reads later to decide whether
-    the LOCAL or FOREIGN tax rate applies).
+    what services.tax_calculator.compute_tax() reads later to decide
+    whether the LOCAL or FOREIGN tax rate applies).
 
     "total" is the POST-tax grand total (`tax_result["total"]`), matching
     the tracker's own column semantics -- Poland's real column header is
@@ -284,9 +284,10 @@ def build_row(data, schema, invoice_no, invoice_date, requested_by, due_date, ta
     gets `tax_result["tax_amount"]`; a tab with no such column (USA, and
     Singapore until it gets a GST column) simply has no tax value stored,
     same as before -- consistent with its tax always being 0 anyway.
-    `tax_result` is `tax.tax_calculator.compute_tax()`'s output, computed
-    by the caller from the REQUEST's raw pre-tax amount (never from an
-    already-built row). Every other column this tab has is left blank."""
+    `tax_result` is `services.tax_calculator.compute_tax()`'s output,
+    computed by the caller from the REQUEST's raw pre-tax amount (never
+    from an already-built row). Every other column this tab has is left
+    blank."""
     values = {
         "invoice_date": invoice_date,
         "invoice_no": invoice_no,
@@ -325,7 +326,7 @@ def save_invoice(data, entity_key, tracker_ref, requested_by=None):
     timestamp, and the auto-filled Payment Status/Payment Due Date/Review
     Status/Email Drafted/MIS Verified/Country fields (see build_row()).
 
-    Computes this invoice's tax breakdown (tax.tax_calculator.compute_tax())
+    Computes this invoice's tax breakdown (services.tax_calculator.compute_tax())
     from the entity, the request's client_country, and the REQUEST's raw
     pre-tax invoice amount -- BEFORE building the row, since the row's own
     "Total Amount" column is then set to the resulting POST-tax total (see
@@ -333,9 +334,10 @@ def save_invoice(data, entity_key, tracker_ref, requested_by=None):
     resulting tax_amount. This is the only place tax is ever computed from
     a fresh rate lookup; once saved, the draft-mailer poller reconstructs
     the same breakdown from what was actually saved (see
-    tax.tax_calculator.tax_result_from_stored()) rather than recomputing
-    it, so a PDF/email drafted days later can't disagree with what's
-    already sitting in the sheet even if the env-var rate changes meanwhile.
+    services.tax_calculator.tax_result_from_stored()) rather than
+    recomputing it, so a PDF/email drafted days later can't disagree with
+    what's already sitting in the sheet even if the env-var rate changes
+    meanwhile.
 
     Returns {"sheet": ..., "row": <written field values, as a dict>,
     "tax": <compute_tax()'s result>}."""

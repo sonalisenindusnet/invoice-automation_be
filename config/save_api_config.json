@@ -1,6 +1,5 @@
 {
-  "google_sheet_id": "1aEVd0Bfcmr2sDnB6AMxIur3wif4eKO4iD3iFny_N_L4",
-  "google_service_account_json": "../credentials/service_account.json",
+  "_comment": "Which Google Sheet is the live tracker, and the service-account credential that authenticates to it, now live in ONE shared place -- credentials/tracker_sheet.json -- not here. See that file's own _comment, and src/utils/tracker_io.py's tracker_ref_from_config().",
   "host": "0.0.0.0",
   "port": 8162
 }

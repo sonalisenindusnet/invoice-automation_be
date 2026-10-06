@@ -7,8 +7,11 @@ invoice PDF, composes the email, uploads it as a real Gmail draft with the
 PDF attached, then flips that row's Email Drafted flag so it's never
 picked up again.
 
-Reuses the schema loader from save_api.excel_writer (same config/tabs/
-files) and the untouched PDF renderer in pdf.generate_invoice_pdf_intl.
+Reuses the schema loader from services.excel_writer (same config/tabs/
+files) and the untouched PDF renderer in services.generate_invoice_pdf_intl.
+
+Moved here from draft_mailer/poller.py on 2026-10-06 as part of the
+api/models/services/utils restructure; content/behavior unchanged.
 """
 import json
 import logging
@@ -16,15 +19,15 @@ import os
 import re
 from pathlib import Path
 
-from pdf.generate_invoice_pdf_intl import render_international_invoice
-from save_api.excel_writer import load_schema
-from save_api.dedicated_invoice import is_dedicated_invoice, parse_consolidated_description
+from services.generate_invoice_pdf_intl import render_international_invoice
+from services.excel_writer import load_schema
+from services.dedicated_invoice import is_dedicated_invoice, parse_consolidated_description
 from utils.xlsx_io import TRACKER_LOCK
 from utils.tracker_io import load_tracker_with_retry, save_tracker, tracker_ref_from_config
-from tax.tax_calculator import tax_result_from_stored
+from services.tax_calculator import tax_result_from_stored
 
-from draft_mailer.email_composer import compose_email
-from draft_mailer.gmail_imap import connect, find_drafts_folder, build_draft_mime, append_draft
+from services.email_composer import compose_email
+from services.gmail_imap import connect, find_drafts_folder, build_draft_mime, append_draft
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "draft_poller_config.json"
@@ -35,10 +38,10 @@ REVIEWABLE_ENTITIES = ["usa", "uk", "poland", "singapore"]
 
 # Entities whose PDF actually shows a client-conditional tax line (their
 # real-world rate depends on the client's own country -- see
-# tax.tax_calculator). Poland and USA are always 0% regardless of client,
-# so their PDF keeps using its static config/entities/*.json rate/label
-# untouched -- see _row_to_intl_row() and generate_invoice_pdf_intl.py's
-# _totals_block().
+# services.tax_calculator). Poland and USA are always 0% regardless of
+# client, so their PDF keeps using its static config/entities/*.json
+# rate/label untouched -- see _row_to_intl_row() and
+# generate_invoice_pdf_intl.py's _totals_block().
 DYNAMIC_TAX_PDF_ENTITIES = {"uk", "singapore"}
 
 POLL_INTERVAL_ENV = "DRAFT_POLL_INTERVAL_SECONDS"
@@ -56,7 +59,7 @@ def poll_interval_seconds():
     """How often (in seconds) the draft loop scans the tracker, read from
     the DRAFT_POLL_INTERVAL_SECONDS environment variable. Falls back to
     DEFAULT_POLL_INTERVAL_SECONDS if unset or not a valid integer. (Same
-    pattern as save_api.excel_writer._payment_due_days().)"""
+    pattern as services.excel_writer._payment_due_days().)"""
     raw = os.environ.get(POLL_INTERVAL_ENV)
     if raw is None or not raw.strip():
         return DEFAULT_POLL_INTERVAL_SECONDS

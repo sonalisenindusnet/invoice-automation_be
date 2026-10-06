@@ -24,6 +24,19 @@ Either way, re-run `pip install -r requirements.txt` any time
 `requirements.txt` changes — activating the venv alone doesn't install
 anything new.
 
+## Code layout
+
+As of 2026-10-06, `src/` is split into layers (see `README.md`'s "Code
+layout" section for the full breakdown):
+
+```text
+src/main.py        Run-everything entry point
+src/api/            FastAPI app + endpoints (HTTP layer only)
+src/models/         Pydantic request schemas
+src/services/       All business logic (tracker writes, tax, PDF, email)
+src/utils/          Shared, cross-cutting helpers (env, tracker I/O, lock)
+```
+
 ## Credentials (.env)
 
 Copy `.env.example` to `.env` (if you haven't already) and fill in:
@@ -59,7 +72,7 @@ TAX_RATE_USA_FOREIGN=0.0
   both.
 - `TAX_RATE_<ENTITY>_LOCAL` / `TAX_RATE_<ENTITY>_FOREIGN` (all 8 above are
   optional — every default shown matches the actual tax rule already in
-  effect) control `src/tax/tax_calculator.py`, the single source of truth
+  effect) control `src/services/tax_calculator.py`, the single source of truth
   for invoice tax. Tax depends on whether the **client's own country**
   matches the entity the invoice is raised from: `LOCAL` is the rate
   charged when it matches (e.g. a Singapore client on a Singapore
@@ -132,7 +145,7 @@ error), that request's country was quietly dropped and treated as
 "foreign" with no visible error, until the blank-value WARNING log caught
 it. The API now accepts both spellings so it works either way; if both
 are somehow sent in the same request, `company_location` wins. It's what
-`src/tax/tax_calculator.py` compares against the entity to decide the
+`src/services/tax_calculator.py` compares against the entity to decide the
 LOCAL vs FOREIGN tax rate (see the `.env` section above); for
 UK/Poland/Singapore it's also stored in that tab's existing "Country"
 column. Matching tolerates punctuation, case, and compound values

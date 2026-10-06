@@ -1,34 +1,43 @@
 """
-app.py
+routes.py
 
-The save API: one endpoint that takes an invoice request from the frontend
-and appends it as a new row into the correct tab of the tracker (a live
-Google Sheet -- see utils/tracker_io.py). Nothing else -- no tax
-calculation, no PDF, no email drafting.
+The save API: HTTP layer only -- the FastAPI app, its endpoints, and the
+thin request/response plumbing around them. Request/response shapes live in
+models/invoice_models.py; all business logic (Excel/tracker writes, tax,
+PDF, email) lives in services/.
 
     POST /invoice/api/v1/invoice-generation
+    POST /invoice/api/v1/dedicated-invoice-generation
+    POST /invoice/api/v1/mis-verification
     GET  /health
+
+Moved here from save_api/app.py on 2026-10-06 as part of the
+api/models/services/utils restructure -- see invoice-automation-architecture.md's
+2026-10-06 update #4 for the full story. Content/behavior is otherwise
+unchanged from save_api/app.py.
 """
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import List
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 SRC_DIR = Path(__file__).resolve().parent.parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from save_api.excel_writer import (
+from models.invoice_models import (
+    InvoiceGenerationRequest, ResourceItem, DedicatedInvoiceGenerationRequest,
+    MisVerificationUpdateRequest,
+)
+from services.excel_writer import (
     save_invoice, update_mis_verified, UnknownEntityError, RowNotFoundError, PfIdMismatchError,
     SchemaDriftError,
 )
-from save_api.dedicated_invoice import consolidate_resources_by_email
+from services.dedicated_invoice import consolidate_resources_by_email
 from utils.tracker_io import tracker_ref_from_config
 
 PROJECT_ROOT = SRC_DIR.parent
@@ -50,132 +59,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPPORTED_ENTITIES = {"usa", "uk", "poland","singapore"}
-
-# Frontend forms commonly send an explicit JSON `null` for an empty optional
-# field instead of omitting the key. Plain `str` fields reject `null`
-# outright with a 422 validation error (confirmed via a direct test:
-# sending raisedByEmail=null on its own crashed the whole request, not just
-# that field) -- so every genuinely-optional, blank-string-default field on
-# InvoiceGenerationRequest is normalized from `null` to `""` before
-# Pydantic's own type validation runs (see that model's `_null_optional_
-# strings_to_empty` validator). Deliberately excludes the required fields
-# (pfId, clientName, invoiceValue, entity) and `currency` (whose real
-# default is "USD", not "") -- a `null` for any of those should keep
-# failing loudly rather than being silently papered over. Module-level (not
-# a class attribute) because Pydantic v2 treats an underscore-prefixed
-# CLASS attribute as a private model field slot, not a plain constant --
-# confirmed the hard way (`TypeError: 'ModelPrivateAttr' object is not
-# iterable`) before moving it here.
-NULLABLE_TO_EMPTY_FIELDS = (
-    "accountName", "invoiceDescription", "contactPersonName", "clientMailTo",
-    "clientMailCc", "intCcMailId", "workOrder", "masterProjectId",
-    "company_location", "companyLocation", "projectValue", "invoiceType",
-    "raisedByEmail", "companyAddress",
-)
-
-
-class InvoiceGenerationRequest(BaseModel):
-    pfId: str = Field(..., min_length=1)
-    accountName: str = ""
-    clientName: str = Field(..., min_length=1)
-    invoiceDescription: str = ""
-    contactPersonName: str = ""
-    clientMailTo: str = ""
-    clientMailCc: str = ""
-    intCcMailId: str = ""
-    workOrder: str = ""
-    masterProjectId: str = ""
-    clientType: str = ""
-    # Originally told the frontend sends this as "company_location"
-    # (snake_case, unlike every other field on this request). A live test
-    # on 2026-08-24 showed a request actually using "companyLocation"
-    # (camelCase, matching this model's other fields) instead -- which
-    # Pydantic silently ignored, since an unrecognized key just falls back
-    # to the default "" rather than erroring. Accepting BOTH spellings here
-    # means whichever one the frontend actually sends works, instead of
-    # this field quietly going blank (and every invoice being taxed as
-    # "foreign") again if it changes back.
-    company_location: str = Field(
-        default="",
-        validation_alias=AliasChoices("company_location", "companyLocation"),
-    )
-    # Required, no default -- per explicit instruction, a save request that
-    # doesn't specify a currency should fail loudly (422), not be silently
-    # assumed to be USD. This matters most for Singapore (multi-currency:
-    # SGD, USD, EURO, ... depending on the client), but applies to every
-    # entity now -- the frontend must always say which currency an invoice
-    # is actually in.
-    currency: str = Field(..., min_length=1)
-    projectValue: str = ""
-    invoiceValue: str = Field(..., min_length=1)
-    invoiceType: str = ""
-    entity: str = Field(..., min_length=1)
-    # Who actually raised/requested this invoice internally -- distinct from
-    # clientMailTo (the CLIENT's email, used for recipient/that column).
-    # Written into the tracker's "Invoice Advised By" column (key
-    # "requested_by"). Previously that column was populated from
-    # clientMailTo as a placeholder; this is the real source now that the
-    # frontend sends it.
-    raisedByEmail: str = ""
-    companyAddress: str = ""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _null_optional_strings_to_empty(cls, data):
-        """See NULLABLE_TO_EMPTY_FIELDS above for why this exists."""
-        if isinstance(data, dict):
-            for key in NULLABLE_TO_EMPTY_FIELDS:
-                if key in data and data[key] is None:
-                    data[key] = ""
-        return data
-
-
-class ResourceItem(BaseModel):
-    pfId: str = Field(..., min_length=1)
-    resourceName: str = Field(..., min_length=1)
-    invoiceAmount: str = Field(..., min_length=1)
-    resouceEmail: str = ""  # Note: typo preserved to match frontend
-
-
-class DedicatedInvoiceGenerationRequest(BaseModel):
-    pfId: str = Field(..., min_length=1)
-    clientName: str = Field(..., min_length=1)
-    contactPersonName: str = ""
-    clientMailTo: str = ""
-    clientMailCc: str = ""
-    intCcMailId: str = ""
-    clientType: str = ""
-    raisedByEmail: str = ""
-    companyLocation: str = ""
-    companyAddress: str = ""
-    companyGeography: str = ""
-    entity: str = Field(..., min_length=1)
-    currency: str = Field(..., min_length=1)
-    invoiceValue: str = Field(..., min_length=1)
-    invoiceDescription: str = ""
-    resources: List[ResourceItem] = Field(..., min_items=1)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _null_optional_strings_to_empty(cls, data):
-        if isinstance(data, dict):
-            nullable_fields = (
-                "contactPersonName", "clientMailTo", "clientMailCc", "intCcMailId",
-                "clientType", "raisedByEmail", "companyLocation", "companyAddress",
-                "companyGeography", "invoiceDescription",
-            )
-            for key in nullable_fields:
-                if key in data and data[key] is None:
-                    data[key] = ""
-        return data
-
-
-class MisVerificationUpdateRequest(BaseModel):
-    invoiceNo: str = Field(..., min_length=1)
-    entity: str = Field(..., min_length=1)
-    pfId: str = ""
-    misUpdateFlag: bool
+SUPPORTED_ENTITIES = {"usa", "uk", "poland", "singapore"}
 
 
 def load_config():
@@ -242,12 +126,13 @@ def invoice_generation(request: InvoiceGenerationRequest):
     )
     if not request.company_location.strip():
         # Not an error -- a blank/missing value is deliberately treated as
-        # "foreign" (see tax.tax_calculator), so this never blocks a save.
-        # But it's worth a visible WARNING (not just silence) since a wrong
-        # field name/transport on the frontend's side would look exactly
-        # like this -- every invoice quietly getting the foreign tax rate
-        # with no error anywhere. If you're expecting a value here and see
-        # this warning instead, check what the frontend is actually sending.
+        # "foreign" (see services.tax_calculator), so this never blocks a
+        # save. But it's worth a visible WARNING (not just silence) since a
+        # wrong field name/transport on the frontend's side would look
+        # exactly like this -- every invoice quietly getting the foreign
+        # tax rate with no error anywhere. If you're expecting a value here
+        # and see this warning instead, check what the frontend is
+        # actually sending.
         logger.warning(
             "Invoice save request for PF ID=%s has no company_location -- "
             "will be treated as a foreign client (0%% local tax rate) for tax purposes",
@@ -311,8 +196,8 @@ def invoice_generation(request: InvoiceGenerationRequest):
         "created_at": row.get("created_at"),
         # Tax breakdown -- computed from (entity, client_country, the
         # REQUEST's raw pre-tax invoiceValue) via
-        # tax.tax_calculator.compute_tax(). "invoice_value" above is the
-        # row's own "Total Amount" column, which (2026-08-24) is the
+        # services.tax_calculator.compute_tax(). "invoice_value" above is
+        # the row's own "Total Amount" column, which (2026-08-24) is the
         # POST-tax grand total -- i.e. it equals "total_with_tax" below,
         # NOT "subtotal". "subtotal" here is what the frontend originally
         # sent as invoiceValue (before tax was added); "total" is
@@ -498,13 +383,18 @@ def _build_dummy_dedicated_request(entity_key):
         invoiceValue="1500",
         invoiceDescription=f"Dummy invoice for {entity_key.upper()} column-layout check",
         resources=[
+            # Distinct emails -- resouceEmail is mandatory as of 2026-10-06
+            # (see models.invoice_models.ResourceItem), and these two are
+            # deliberately different people so this dummy call still
+            # demonstrates two separate line items, not the same-email
+            # merge (see services.dedicated_invoice.consolidate_resources_by_email()).
             ResourceItem(
                 pfId=f"{dummy_pf_id}/1", resourceName="Dummy Resource One",
-                invoiceAmount="1000", resouceEmail="",
+                invoiceAmount="1000", resouceEmail="dummy.resource1@example.com",
             ),
             ResourceItem(
                 pfId=f"{dummy_pf_id}/2", resourceName="Dummy Resource Two",
-                invoiceAmount="500", resouceEmail="",
+                invoiceAmount="500", resouceEmail="dummy.resource2@example.com",
             ),
         ],
     )

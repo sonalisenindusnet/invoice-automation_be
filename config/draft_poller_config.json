@@ -1,6 +1,5 @@
 {
-  "google_sheet_id": "1Pj7yz4opaAdv7TCjaGO_JMJaZGAV-5vFaLYPq9hk7PU",
-  "google_service_account_json": "../credentials/service_account.json",
+  "_comment": "Which Google Sheet is the live tracker, and the service-account credential that authenticates to it, now live in ONE shared place -- credentials/tracker_sheet.json -- not here. See that file's own _comment, and src/utils/tracker_io.py's tracker_ref_from_config().",
   "imap_host": "imap.gmail.com",
   "imap_port": 993,
   "imap_timeout_seconds": 45,

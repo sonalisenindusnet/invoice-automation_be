@@ -49,6 +49,9 @@ this module's callers assumed. See compute_tax() (used once, at SAVE
 time, from the raw pre-tax amount the frontend sent) vs.
 tax_result_from_stored() (used at DRAFT time, reconstructing the same
 breakdown from what was actually saved) for how this is now split.
+
+Moved here from tax/tax_calculator.py on 2026-10-06 as part of the
+api/models/services/utils restructure; content/behavior unchanged.
 """
 import os
 import re

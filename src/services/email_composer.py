@@ -5,10 +5,13 @@ Turns a tracker row into {to, cc, subject, body}. Subject is deterministic;
 body is LLM-drafted (llm_drafter.py) with a plain-template fallback if that
 call fails for any reason -- a flaky API call should never block a draft
 from being created.
+
+Moved here from draft_mailer/email_composer.py on 2026-10-06 as part of
+the api/models/services/utils restructure; content/behavior unchanged.
 """
 import logging
 
-from draft_mailer.llm_drafter import draft_invoice_email_body_llm
+from services.llm_drafter import draft_invoice_email_body_llm
 
 logger = logging.getLogger("draft_mailer.email_composer")
 

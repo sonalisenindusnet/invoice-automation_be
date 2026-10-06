@@ -5,6 +5,9 @@ Per-entity invoice PDF rendering for USA, UK, Poland (live) and Singapore
 (config support only, not wired into the live pipeline yet). Each entity's
 layout/tax rule/bank details live in config/entities/*.json.
 
+Moved here from pdf/generate_invoice_pdf_intl.py on 2026-10-06 as part of
+the api/models/services/utils restructure; content/behavior unchanged.
+
 Entry point:
     render_international_invoice(entity_key, row, out_path)
 
@@ -452,8 +455,8 @@ def _totals_block(entity, row, sty, subtotal, currency_symbol):
     "AMOUNT(...)" column header) varies by entity — controlled by
     entity["totals_show_currency_symbol"] (default True).
 
-    A per-invoice dynamic tax (row["tax"], set by draft_mailer/poller.py
-    via tax.tax_calculator.compute_tax() for entities whose real tax rate
+    A per-invoice dynamic tax (row["tax"], set by services/poller.py via
+    services.tax_calculator.compute_tax() for entities whose real tax rate
     depends on the CLIENT's own country, not just the entity — currently
     UK and Singapore only) overrides this entity's static rate for this
     one invoice; the label is rebuilt from entity["tax"]["label_template"]

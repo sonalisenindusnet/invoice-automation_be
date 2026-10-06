@@ -13,6 +13,9 @@ the model name below.
 
 Uses the google-genai SDK's Interactions API (`client.interactions.create()`
 / `.output_text`).
+
+Moved here from draft_mailer/llm_drafter.py on 2026-10-06 as part of the
+api/models/services/utils restructure; content/behavior unchanged.
 """
 import json
 import logging

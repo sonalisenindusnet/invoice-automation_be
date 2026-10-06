@@ -10,6 +10,9 @@ Credentials (EMAIL_ADDRESS, EMAIL_APP_PASSWORD -- a Gmail App Password,
 not the account password) come from the environment (see utils/env_loader.py
 / .env.example). Connection settings (host/port/timeout) come from the
 poller's own config.
+
+Moved here from draft_mailer/gmail_imap.py on 2026-10-06 as part of the
+api/models/services/utils restructure; content/behavior unchanged.
 """
 import email.utils
 import imaplib

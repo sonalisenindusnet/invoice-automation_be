@@ -2,9 +2,9 @@
 main.py
 
 Entry point: runs both background jobs in one process.
-  1. The save API (save_api/app.py) -- receives an invoice from the
+  1. The save API (api/routes.py) -- receives an invoice from the
      frontend and saves it into the Excel tracker.
-  2. The draft poll loop (draft_mailer/poller.py) -- scans the tracker
+  2. The draft poll loop (services/poller.py) -- scans the tracker
      for rows marked "Reviewed" and drafts a Gmail email (with the invoice
      PDF attached) for each one that hasn't been drafted yet.
 
@@ -41,9 +41,9 @@ load_env_file()
 
 import uvicorn
 
-from save_api.app import app as save_api_app, load_config as load_save_api_config
-from draft_mailer import poller
-from draft_mailer.gmail_imap import ImapAuthError
+from api.routes import app as save_api_app, load_config as load_save_api_config
+from services import poller
+from services.gmail_imap import ImapAuthError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("main")

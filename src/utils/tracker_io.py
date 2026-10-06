@@ -3,12 +3,22 @@ tracker_io.py
 
 Single entry point every read/write in save_api/excel_writer.py and
 draft_mailer/poller.py goes through to reach the actual Invoice Tracker
-storage -- the live Google Sheet (sheet id + service-account credentials
-come from config; see tracker_ref_from_config below). Local-.xlsx support
-has been removed entirely: `tracker_ref` is always the
+storage -- the live Google Sheet. Local-.xlsx support has been removed
+entirely: `tracker_ref` is always the
 {"type": "google_sheets", "sheet_id": ..., "service_account_json": ...}
 dict form now, and load_tracker_with_retry() raises immediately if it's
 handed anything else.
+
+Sheet id + service-account credential resolution (as of 2026-10-06): both
+values come from the single `credentials/tracker_sheet.json` file (see
+`_load_tracker_credentials()`/`tracker_ref_from_config()` below), not from
+each app's own config/*.json. They used to be duplicated across
+save_api_config.json and draft_poller_config.json -- which is exactly how
+they silently drifted apart once (one got updated when the tracker moved,
+the other didn't, and every invoice saved started landing in the wrong
+sheet with no error anywhere). Keeping both values in one file, physically
+next to the service-account credential they pair with, means a future
+tracker change is a one-line edit in exactly one place.
 
 WHAT THIS MODULE DOES: opens the live Google Sheet via the Sheets API
 (gspread) and returns a WorkbookHandle that duck-types the small subset of
@@ -22,6 +32,7 @@ Google Sheets has no separate "cached formula value" concept the way a
 local .xlsx can -- it always live-evaluates formulas on read, so
 `data_only` is accepted here for call-site compatibility but has no effect.
 """
+import json
 import logging
 import time
 from pathlib import Path
@@ -80,25 +91,56 @@ def load_tracker_with_retry(tracker_ref, data_only=False, retries=4, delay_secon
     raise last_err
 
 
-def tracker_ref_from_config(cfg, config_dir):
-    """Resolves a config dict into the `tracker_ref` shape
-    load_tracker_with_retry() expects -- always the google_sheets dict now.
-    Both save_api and draft_mailer resolve their (separately-loaded,
-    deliberately duplicated) configs through this one shared function so
-    the sheet-id/service-account resolution logic never drifts between the
-    two. Raises KeyError with a clear message if the config is missing
-    either required key."""
-    if "google_sheet_id" not in cfg or "google_service_account_json" not in cfg:
-        raise KeyError(
-            "Config is missing 'google_sheet_id' and/or 'google_service_account_json' -- "
-            "the tracker is always the live Google Sheet now, local .xlsx support has been removed."
+TRACKER_CREDENTIALS_FILENAME = "tracker_sheet.json"
+
+
+def _load_tracker_credentials(credentials_dir):
+    """Loads the single shared {google_sheet_id, google_service_account_json}
+    pair from credentials/tracker_sheet.json -- the one place that decides
+    which Google Sheet the whole app treats as the live Invoice Tracker.
+    Raises FileNotFoundError if it's missing, or KeyError if it's present
+    but missing either key -- same "fail loudly, never guess" policy as
+    every other tracker-resolution error in this module."""
+    path = credentials_dir / TRACKER_CREDENTIALS_FILENAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found -- this is the single source of truth for which "
+            "Google Sheet is the live Invoice Tracker (see its own _comment). "
+            "Create it (next to credentials/service_account.json) before running "
+            "save_api, draft_mailer, or any of the scripts/*.py one-off tools."
         )
-    sa_path = Path(cfg["google_service_account_json"])
+    with open(path, "r", encoding="utf-8") as f:
+        creds = json.load(f)
+    if "google_sheet_id" not in creds or "google_service_account_json" not in creds:
+        raise KeyError(
+            f"{path} is missing 'google_sheet_id' and/or 'google_service_account_json'."
+        )
+    return creds
+
+
+def tracker_ref_from_config(cfg, config_dir):
+    """Resolves the `tracker_ref` shape load_tracker_with_retry() expects.
+
+    `google_sheet_id`/`google_service_account_json` used to be read out of
+    `cfg` (each app's own config/*.json) -- duplicated across
+    save_api_config.json and draft_poller_config.json, which is exactly how
+    they silently drifted apart once (see this module's own docstring). As
+    of 2026-10-06 both values live in exactly ONE place --
+    credentials/tracker_sheet.json, next to the service-account credential
+    it pairs with -- resolved here via `_load_tracker_credentials()`
+    regardless of what `cfg` contains. `cfg` is kept as a parameter purely
+    so every existing call site (save_api/app.py, draft_mailer/poller.py,
+    and the three scripts/*.py one-off tools) keeps working unchanged; it's
+    no longer read by this function."""
+    credentials_dir = config_dir.parent / "credentials"
+    creds = _load_tracker_credentials(credentials_dir)
+
+    sa_path = Path(creds["google_service_account_json"])
     if not sa_path.is_absolute():
-        sa_path = (config_dir / sa_path).resolve()
+        sa_path = (credentials_dir / sa_path).resolve()
     return {
         "type": "google_sheets",
-        "sheet_id": cfg["google_sheet_id"],
+        "sheet_id": creds["google_sheet_id"],
         "service_account_json": str(sa_path),
     }
 
